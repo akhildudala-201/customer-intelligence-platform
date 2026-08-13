@@ -9,6 +9,7 @@ A backend platform for customer intelligence, churn prediction, customer segment
 This project analyzes customer purchasing behavior using the Olist E-Commerce dataset to:
 
 - Predict customer churn
+- 
 - Generate customer risk scores
 - Segment customers
 - Produce targeted marketing campaign lists
