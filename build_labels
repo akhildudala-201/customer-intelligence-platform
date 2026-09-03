@@ -1,0 +1,119 @@
+import pandas as pd
+from sqlalchemy import create_engine, text
+from urllib.parse import quote_plus
+
+# --------------------------------------------------
+# 1. DATABASE CONNECTION
+# --------------------------------------------------
+DB_USER = "root"
+DB_PASSWORD = "yasha@1003"
+DB_HOST = "localhost"
+DB_PORT = "3306"
+DB_NAME = "olist"
+
+encoded_password = quote_plus(DB_PASSWORD)
+DATABASE_URL = f"mysql+pymysql://{DB_USER}:{encoded_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+engine = create_engine(DATABASE_URL)
+
+PERCENTILE = 0.41
+
+
+def inspect_and_print_labels():
+    print("\nLoading customer order data from MySQL...")
+
+    with engine.connect() as connection:
+        # Step A: Count total raw rows in the customers table
+        total_raw_customers_table = connection.execute(
+            text("SELECT COUNT(*) FROM customers")
+        ).scalar()
+
+        # Step B: Load customer records with valid completed order timestamps
+        query = text(
+            """
+            SELECT
+                c.customer_id,
+                c.customer_unique_id,
+                o.order_purchase_timestamp AS last_order_date
+            FROM customers c
+            INNER JOIN orders o
+                ON c.customer_id = o.customer_id
+            WHERE o.order_purchase_timestamp IS NOT NULL
+            """
+        )
+        raw_df = pd.read_sql(query, connection)
+
+    total_valid_orders = len(raw_df)
+    filtered_invalid_records = total_raw_customers_table - total_valid_orders
+
+    raw_df["last_order_date"] = pd.to_datetime(raw_df["last_order_date"])
+
+    # Step C: Aggregate to unique customer level (MAX purchase date per unique ID)
+    df = raw_df.groupby("customer_unique_id")["last_order_date"].max().reset_index()
+    total_unique_customers = len(df)
+    repeat_purchases = total_valid_orders - total_unique_customers
+
+    # Step D: Recency & Churn Label Assignment
+    reference_date = df["last_order_date"].max()
+    df["recency_days"] = (reference_date - df["last_order_date"]).dt.days
+    churn_threshold = df["recency_days"].quantile(PERCENTILE)
+    df["churn_label"] = (df["recency_days"] > churn_threshold).astype(int)
+
+    retained = (df["churn_label"] == 0).sum()
+    churned = (df["churn_label"] == 1).sum()
+
+    # --------------------------------------------------
+    # PRINT SUMMARY WITH FULL AUDIT TRAIL
+    # --------------------------------------------------
+    print("\n" + "=" * 65)
+    print("CUSTOMER CHURN INSPECTION SUMMARY (~180 DAYS TARGET)")
+    print("=" * 65)
+    print(f"Reference Date:            {reference_date.date()}")
+    print(f"Configured Percentile:     {PERCENTILE * 100:.0f}th percentile")
+    print(f"Calculated Day Threshold:  {churn_threshold:.2f} days")
+    print("-" * 65)
+    print(f"Raw MySQL 'customers' Rows:{total_raw_customers_table:,} (table total)")
+    print(f"Filtered / Unused Records: {filtered_invalid_records:,} (canceled/null orders)")
+    print(f"Valid Order Records:       {total_valid_orders:,} (completed orders)")
+    print(f"Repeat Purchases Merged:   {repeat_purchases:,} (multi-order buyers)")
+    print(f"Final Unique Customers:    {total_unique_customers:,} (person-level IDs)")
+    print("-" * 65)
+    print(
+        f"Retained (Label 0):        "
+        f"{retained:,} ({retained / total_unique_customers * 100:.2f}%)"
+    )
+    print(
+        f"Churned  (Label 1):        "
+        f"{churned:,} ({churned / total_unique_customers * 100:.2f}%)"
+    )
+    print("=" * 65)
+
+    # --------------------------------------------------
+    # PRINT FINAL LABELED CUSTOMER DATASET
+    # --------------------------------------------------
+    output_df = df[
+        [
+            "customer_unique_id",
+            "last_order_date",
+            "recency_days",
+            "churn_label"
+        ]
+    ]
+
+    # --------------------------------------------------
+    # SAVE FINAL DATASET AS CSV
+    # --------------------------------------------------
+    output_df.to_csv("customer_churn_labels.csv", index=False)
+
+    print("\n" + "=" * 65)
+    print("FINAL LABELED CUSTOMER OUTPUT")
+    print("=" * 65)
+    print(output_df.to_string(index=False))
+    print("=" * 65)
+    print(f"Final Output Shape: {output_df.shape}")
+    print("CSV File Saved: customer_churn_labels.csv")
+
+    return output_df
+
+
+if __name__ == "__main__":
+    labeled_customers = inspect_and_print_labels()
