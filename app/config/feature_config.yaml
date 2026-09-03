@@ -1,0 +1,31 @@
+# FEATURE ENGINEERING CONFIGURATION
+
+features:
+
+  rfm:
+    enabled: true
+
+  order_behavior:
+    enabled: true
+
+  payment:
+    enabled: true
+
+  engagement:
+    enabled: true
+
+  products:
+    enabled: true
+
+  fulfillment:
+    enabled: true
+
+  time_behavior:
+    enabled: true
+
+  geography:
+    enabled: true
+
+
+output:
+  file_name: "customer_features_raw.csv"
