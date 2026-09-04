@@ -7,8 +7,7 @@ return_window_days: 180
 # Order statuses treated as invalid / not counted as a real purchase event
 # when determining a customer's first order or any repeat order.
 excluded_order_statuses:
-  - "canceled"
-  - "unavailable"
+
 
 # Customers who haven't had return_window_days pass since their order
 # haven't had enough time to be observed as retained or churned.
