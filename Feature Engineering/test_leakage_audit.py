@@ -11,7 +11,7 @@ from sqlalchemy import text
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from load_pipeline_inputs import _get_engine
+from database import engine
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -104,7 +104,6 @@ def valid_dataset():
 
 
 def test_combined_dataset_passes_audit():
-    engine = _get_engine()
     with engine.connect() as connection:
         try:
             dataset = pd.read_sql_query(text(f"SELECT * FROM {DB_TABLE_NAME}"), connection)
