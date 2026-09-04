@@ -70,6 +70,20 @@ def audit_dataset(dataset: pd.DataFrame) -> list[str]:
         if parsed_dates.isna().any():
             errors.append(f"{column} contains invalid dates.")
 
+    if {"last_purchase_date", "reference_date"}.issubset(dataset.columns):
+        reference_dates = pd.to_datetime(dataset["reference_date"], errors="coerce")
+        last_purchase_dates = pd.to_datetime(dataset["last_purchase_date"], errors="coerce")
+        future_rows = (
+            last_purchase_dates.notna()
+            & reference_dates.notna()
+            & (last_purchase_dates > reference_dates)
+        )
+        if future_rows.any():
+            errors.append(
+                "possible data leakage: "
+                f"{int(future_rows.sum())} rows have last_purchase_date after reference_date."
+            )
+
     recency = pd.to_numeric(dataset["recency_days"], errors="coerce")
     if recency.isna().any() or (recency < 0).any():
         errors.append("recency_days contains invalid or negative values.")
@@ -193,3 +207,11 @@ def test_audit_detects_censored_value_mismatch(valid_dataset):
     invalid.loc[0, "censored"] = 0
     errors = audit_dataset(invalid)
     assert any("0/1" in error for error in errors)
+
+
+def test_audit_detects_possible_data_leakage(valid_dataset):
+    invalid = valid_dataset.copy()
+    invalid.loc[0, "reference_date"] = "2018-10-16"
+    invalid.loc[0, "last_purchase_date"] = "2018-10-17"
+    errors = audit_dataset(invalid)
+    assert any("possible data leakage" in error for error in errors)
