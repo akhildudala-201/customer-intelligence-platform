@@ -1,87 +1,63 @@
+
 """
-CustomerSphere — Feature Engineering Module
-
-
-HYBRID CUSTOMER CHURN LABELING
-
-Method:
-    1. Repeat-purchase behavior
-    2. 180-day recency threshold
-    3. Censoring for customers whose observation window
-       has not yet matured
-
-Label definition:
-
-    0 = RETAINED
-        Customer placed a subsequent valid order
-        within 180 days of a previous order.
-
-    1 = CHURNED
-        Customer did not place a subsequent valid order
-        within 180 days AND at least 180 days have
-        passed since their last order.
-
-    NaN = CENSORED
-        Customer has not repeated yet, but fewer than
-        180 days have passed since their last order.
-
-This is a hybrid behavioral + recency-based approach.
+CustomerSphere — Feature Engineering & Churn Labeling Module
 """
+
+from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import create_engine, text
-from urllib.parse import quote_plus
+import yaml
+from sqlalchemy import text
+
+# Import the database engine used by ingest.py
+from database import engine
 
 
-# ==========================================================
-# 1. DATABASE CONNECTION
-# ==========================================================
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
-DB_USER = "root"
-DB_PASSWORD = "yasha@1003"
-DB_HOST = "localhost"
-DB_PORT = "3306"
-DB_NAME = "olist"
-
-encoded_password = quote_plus(DB_PASSWORD)
-
-DATABASE_URL = (
-    f"mysql+pymysql://"
-    f"{DB_USER}:{encoded_password}@"
-    f"{DB_HOST}:{DB_PORT}/{DB_NAME}"
-)
-
-engine = create_engine(DATABASE_URL)
+PROJECT_ROOT = Path(__file__).resolve().parent
+CONFIG_PATH = PROJECT_ROOT / "config" / "label_config.yaml"
 
 
-# ==========================================================
-# 2. CHURN CONFIGURATION
-# ==========================================================
+def load_config() -> dict:
+    """Load and normalize the churn-label configuration from YAML."""
 
-# Customer must return within this number of days
-# to be considered retained.
-RETURN_WINDOW_DAYS = 180
+    if not CONFIG_PATH.exists():
+        raise FileNotFoundError(
+            f"Configuration file not found at: {CONFIG_PATH}"
+        )
 
-# Customer must be inactive for at least this many days
-# before being classified as churned.
-RECENCY_THRESHOLD_DAYS = 180
+    with CONFIG_PATH.open(encoding="utf-8") as file:
+        config = yaml.safe_load(file) or {}
 
-# True  = remove censored customers from final output
-# False = keep censored customers with label = NaN
-EXCLUDE_CENSORED_CUSTOMERS = False
+    if "reference_date" not in config:
+        raise ValueError(
+            "label_config.yaml must define 'reference_date'."
+        )
+
+    config["reference_date"] = pd.Timestamp(
+        config["reference_date"]
+    )
+
+    return config
 
 
-# ==========================================================
-# 3. FETCH VALID ORDERS
-# ==========================================================
+# ============================================================
+# DATABASE EXTRACTION
+# ============================================================
 
-def fetch_valid_orders(reference_date):
+def fetch_valid_orders(
+    db_engine,
+    reference_date: pd.Timestamp,
+    excluded_statuses: list,
+) -> pd.DataFrame:
     """
-    Fetch valid customer orders from MySQL.
+    Fetch customer orders on or before the reference date.
 
-    Canceled and unavailable orders are excluded.
-
-    The calculation is performed at customer_unique_id level.
+    Canceled/unavailable orders are included when excluded_statuses
+    is empty, allowing them to participate in recency calculations.
     """
 
     query = text(
@@ -94,163 +70,145 @@ def fetch_valid_orders(reference_date):
         FROM orders o
         INNER JOIN customers c
             ON o.customer_id = c.customer_id
-        WHERE o.order_status NOT IN ('canceled', 'unavailable')
+        WHERE o.order_status NOT IN :excluded_statuses
           AND o.order_purchase_timestamp IS NOT NULL
-          AND o.order_purchase_timestamp < :reference_date
+          AND o.order_purchase_timestamp <= :reference_date
         """
     )
 
-    with engine.connect() as connection:
-
+    with db_engine.connect() as connection:
         df = pd.read_sql(
             query,
             connection,
             params={
-                "reference_date": reference_date
-            }
+                "reference_date": reference_date,
+                "excluded_statuses": (
+                    tuple(excluded_statuses)
+                    if excluded_statuses
+                    else ("__NO_EXCLUDED_STATUS__",)
+                ),
+            },
         )
 
-    df["order_purchase_timestamp"] = pd.to_datetime(
-        df["order_purchase_timestamp"]
-    )
+    if not df.empty:
+        df["order_purchase_timestamp"] = pd.to_datetime(
+            df["order_purchase_timestamp"]
+        )
 
     return df
 
 
-# ==========================================================
-# 4. BUILD HYBRID CHURN LABELS
-# ==========================================================
+# ============================================================
+# BUILD CHURN LABELS
+# ============================================================
 
 def build_labels():
+    """
+    Build customer churn labels using the configuration
+    defined in config/label_config.yaml.
+    """
 
-    print("\nLoading customer order data from MySQL...")
+    print("\nLoading configuration and database engine...")
 
-    # ======================================================
-    # GET GLOBAL DATASET REFERENCE DATE
-    # ======================================================
+    config = load_config()
 
-    with engine.connect() as connection:
+    reference_date = config["reference_date"]
 
-        global_max_query = text(
-            """
-            SELECT MAX(
-                GREATEST(
-                    COALESCE(
-                        order_purchase_timestamp,
-                        '1970-01-01'
-                    ),
-                    COALESCE(
-                        order_approved_at,
-                        '1970-01-01'
-                    ),
-                    COALESCE(
-                        order_delivered_carrier_date,
-                        '1970-01-01'
-                    ),
-                    COALESCE(
-                        order_delivered_customer_date,
-                        '1970-01-01'
-                    ),
-                    COALESCE(
-                        order_estimated_delivery_date,
-                        '1970-01-01'
-                    )
-                )
-            ) AS max_dataset_date
-            FROM orders
-            """
-        )
-
-        reference_date_raw = connection.execute(
-            global_max_query
-        ).scalar()
-
-    reference_date = pd.to_datetime(
-        reference_date_raw
+    return_window_days = int(
+        config.get("return_window_days", 180)
     )
 
+    exclude_censored = bool(
+        config.get("exclude_censored_customers", False)
+    )
+
+    # Intentionally empty:
+    # canceled/unavailable orders remain part of recency logic.
+    excluded_statuses = []
+
+    print(f"Configuration File:      {CONFIG_PATH}")
+    print(f"Reference Date:          {reference_date.date()}")
+    print(f"Return Window Days:      {return_window_days}")
+    print("Excluded Order Statuses: []")
     print(
-        f"Reference date detected: "
-        f"{reference_date.date()}"
+        f"Exclude Censored:        {exclude_censored}"
     )
 
-    # ======================================================
-    # LOAD VALID ORDERS
-    # ======================================================
+    # --------------------------------------------------------
+    # Fetch orders
+    # --------------------------------------------------------
 
     orders = fetch_valid_orders(
-        reference_date
+        engine,
+        reference_date,
+        excluded_statuses,
     )
 
     if orders.empty:
-
         print("\nNo valid orders found.")
 
-        return (
-            pd.DataFrame(
-                columns=[
-                    "customer_unique_id",
-                    "first_order_date",
-                    "last_order_date",
-                    "days_since_last_order",
-                    "num_valid_orders",
-                    "censored",
-                    "label"
-                ]
-            ),
-            reference_date
+        empty_result = pd.DataFrame(
+            columns=[
+                "customer_unique_id",
+                "first_order_date",
+                "last_order_date",
+                "days_since_last_order",
+                "num_valid_orders",
+                "censored",
+                "label",
+            ]
         )
 
-    # ======================================================
-    # SORT ORDERS
-    # ======================================================
+        return empty_result, reference_date
+
+    # --------------------------------------------------------
+    # Sort orders
+    # --------------------------------------------------------
 
     orders = orders.sort_values(
         [
             "customer_unique_id",
-            "order_purchase_timestamp"
+            "order_purchase_timestamp",
         ]
-    )
+    ).reset_index(drop=True)
 
-    # ======================================================
-    # CUSTOMER-LEVEL METRICS
-    # ======================================================
+    # --------------------------------------------------------
+    # Customer-level aggregation
+    # --------------------------------------------------------
 
     grouped = orders.groupby(
         "customer_unique_id"
     )
 
-    result = grouped.agg(
-        first_order_date=(
-            "order_purchase_timestamp",
-            "min"
-        ),
-        last_order_date=(
-            "order_purchase_timestamp",
-            "max"
-        ),
-        num_valid_orders=(
-            "order_id",
-            "nunique"
+    result = (
+        grouped.agg(
+            first_order_date=(
+                "order_purchase_timestamp",
+                "min",
+            ),
+            last_order_date=(
+                "order_purchase_timestamp",
+                "max",
+            ),
+            num_valid_orders=(
+                "order_id",
+                "nunique",
+            ),
         )
-    ).reset_index()
-
-    # ======================================================
-    # RECENCY
-    # ======================================================
-
-    result["days_since_last_order"] = (
-        (
-            reference_date
-            - result["last_order_date"]
-        ).dt.total_seconds() / 86400.0
+        .reset_index()
     )
 
-    # ======================================================
-    # REPEAT-PURCHASE ANALYSIS
-    # ======================================================
+    # --------------------------------------------------------
+    # Recency
+    # --------------------------------------------------------
 
-    # Find previous order for each customer.
+    result["days_since_last_order"] = (
+        reference_date - result["last_order_date"]
+    ).dt.total_seconds() / 86400.0
+
+    # --------------------------------------------------------
+    # Calculate gap between consecutive orders
+    # --------------------------------------------------------
 
     orders["prev_order_date"] = (
         orders
@@ -260,332 +218,236 @@ def build_labels():
         .shift(1)
     )
 
-    # Calculate gap between current and previous order.
-
     orders["gap_to_prev"] = (
-        (
-            orders["order_purchase_timestamp"]
-            - orders["prev_order_date"]
-        ).dt.total_seconds() / 86400.0
-    )
+        orders["order_purchase_timestamp"]
+        - orders["prev_order_date"]
+    ).dt.total_seconds() / 86400.0
 
-    # ======================================================
-    # IDENTIFY CUSTOMERS WHO RETURNED WITHIN 180 DAYS
-    # ======================================================
+    # --------------------------------------------------------
+    # Identify customers who returned within the window
+    # --------------------------------------------------------
 
     repeat_customers = set(
         orders.loc[
-            orders["gap_to_prev"]
-            <= RETURN_WINDOW_DAYS,
-            "customer_unique_id"
+            orders["gap_to_prev"] <= return_window_days,
+            "customer_unique_id",
         ]
     )
 
     result["has_repeat"] = (
-        result["customer_unique_id"]
-        .isin(repeat_customers)
+        result["customer_unique_id"].isin(
+            repeat_customers
+        )
     )
 
-    # ======================================================
-    # HYBRID CENSORING LOGIC
-    # ======================================================
-
-    # Censored means:
+    # --------------------------------------------------------
+    # Censoring
     #
-    # 1. Customer has NOT repeated
-    # AND
-    # 2. Fewer than 180 days have passed
-    #    since their last order.
+    # A customer is censored when:
+    #   - they have not returned, AND
+    #   - they have not yet been observed for the full
+    #     return window.
+    # --------------------------------------------------------
 
     result["censored"] = (
         (~result["has_repeat"])
-        &
-        (
+        & (
             result["days_since_last_order"]
-            < RECENCY_THRESHOLD_DAYS
+            < return_window_days
         )
     )
 
-    # ======================================================
-    # HYBRID CHURN LABEL
-    # ======================================================
-
-    # Start with unknown labels.
+    # --------------------------------------------------------
+    # Churn labels
+    #
+    # Label 0 = customer returned within the window
+    # Label 1 = customer did not return and full window elapsed
+    # NA      = customer is censored
+    # --------------------------------------------------------
 
     result["label"] = pd.NA
 
-    # ------------------------------------------------------
-    # RETAINED
-    # ------------------------------------------------------
-    #
-    # Customer returned within 180 days.
-    #
-    # label = 0
-
-    retained_mask = (
-        result["has_repeat"]
-    )
-
+    # Retained
     result.loc[
-        retained_mask,
-        "label"
+        result["has_repeat"],
+        "label",
     ] = 0
 
-    # ------------------------------------------------------
-    # CHURNED
-    # ------------------------------------------------------
-    #
-    # Customer:
-    #
-    # - did NOT repeat
-    # - AND has been inactive for >= 180 days
-    #
-    # label = 1
-
-    churned_mask = (
-        (~result["has_repeat"])
-        &
-        (
-            result["days_since_last_order"]
-            >= RECENCY_THRESHOLD_DAYS
-        )
-    )
-
+    # Churned
     result.loc[
-        churned_mask,
-        "label"
+        (~result["has_repeat"])
+        & (
+            result["days_since_last_order"]
+            >= return_window_days
+        ),
+        "label",
     ] = 1
 
-    # ======================================================
-    # REMOVE INTERNAL COLUMN
-    # ======================================================
-
+    # Remove temporary column
     result = result.drop(
         columns=["has_repeat"]
     )
 
-    # ======================================================
-    # OPTIONALLY REMOVE CENSORED CUSTOMERS
-    # ======================================================
+    # --------------------------------------------------------
+    # Optionally remove censored customers
+    # --------------------------------------------------------
 
-    if EXCLUDE_CENSORED_CUSTOMERS:
-
+    if exclude_censored:
         result = result[
             ~result["censored"]
         ].reset_index(drop=True)
 
-    # ======================================================
-    # FINAL COLUMN ORDER
-    # ======================================================
+    # --------------------------------------------------------
+    # Final column order
+    # --------------------------------------------------------
 
-    result = result[
-        [
-            "customer_unique_id",
-            "first_order_date",
-            "last_order_date",
-            "days_since_last_order",
-            "num_valid_orders",
-            "censored",
-            "label"
-        ]
+    columns = [
+        "customer_unique_id",
+        "first_order_date",
+        "last_order_date",
+        "days_since_last_order",
+        "num_valid_orders",
+        "censored",
+        "label",
     ]
 
-    # Convert label to nullable integer.
-    # This allows:
-    #
-    # 0 = retained
-    # 1 = churned
-    # <NA> = censored
+    result = result[columns]
 
-    result["label"] = (
-        result["label"]
-        .astype("Int64")
-    )
+    # Pandas nullable integer type
+    result["label"] = result["label"].astype("Int64")
 
     return result, reference_date
 
 
-# ==========================================================
-# 5. SAVE LABELS TO MYSQL
-# ==========================================================
+# ============================================================
+# SAVE LABELS TO MYSQL
+# ============================================================
 
 def save_labels_to_db(
-    df,
-    table_name="customer_churn_labels"
+    db_engine,
+    df: pd.DataFrame,
+    table_name: str = "customer_churn_labels",
 ):
+    """Save churn labels to MySQL."""
 
     print(
-        f"\nSaving labels to MySQL table "
-        f"`{table_name}`..."
+        f"\nSaving labels to MySQL table `{table_name}`..."
     )
-
-    # MySQL does not use pandas nullable Int64
-    # in the same way, so convert missing values to None.
 
     db_df = df.copy()
 
+    # Convert Pandas <NA> to Python None for MySQL
     db_df["label"] = (
         db_df["label"]
         .astype(object)
         .where(
             db_df["label"].notna(),
-            None
+            None,
         )
     )
 
-    db_df.to_sql(
-        table_name,
-        con=engine,
-        if_exists="replace",
-        index=False,
-        chunksize=5000
-    )
+    with db_engine.begin() as connection:
+        db_df.to_sql(
+            table_name,
+            con=connection,
+            if_exists="replace",
+            index=False,
+            chunksize=5000,
+        )
 
     print(
-        f"Saved -> MySQL table "
-        f"`{table_name}` "
+        f"Saved -> MySQL table `{table_name}` "
         f"({len(db_df):,} rows)"
     )
 
 
-# ==========================================================
-# 6. MAIN PROGRAM
-# ==========================================================
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
 
     labels, reference_date = build_labels()
 
-    # ======================================================
-    # PRINT SUMMARY
-    # ======================================================
+    if labels.empty:
+        print("\nNo labels generated.")
+        print("Process completed.")
+        raise SystemExit(0)
 
-    print("\n" + "=" * 70)
-    print(
-        "HYBRID CUSTOMER CHURN LABEL SUMMARY"
-    )
-    print("=" * 70)
+    # --------------------------------------------------------
+    # Statistics
+    # --------------------------------------------------------
 
-    print(
-        f"Reference Date:          "
-        f"{reference_date.date()}"
-    )
+    total_customers = len(labels)
 
-    print(
-        f"Repeat Window:           "
-        f"{RETURN_WINDOW_DAYS} days"
-    )
+    retained = (
+        labels["label"] == 0
+    ).sum()
 
-    print(
-        f"Recency Threshold:       "
-        f"{RECENCY_THRESHOLD_DAYS} days"
-    )
+    churned = (
+        labels["label"] == 1
+    ).sum()
 
-    print(
-        f"Exclude Censored:        "
-        f"{EXCLUDE_CENSORED_CUSTOMERS}"
-    )
+    censored = (
+        labels["censored"]
+    ).sum()
 
-    print("-" * 70)
+    print("\n" + "=" * 65)
+    print("HYBRID CUSTOMER CHURN LABEL BREAKDOWN")
+    print("=" * 65)
 
     print(
-        f"Final Customers:         "
-        f"{len(labels):,}"
+        f"Reference Date:          {reference_date.date()}"
     )
 
-    if not labels.empty:
+    print(
+        f"Total Unique Customers:  {total_customers:,}"
+    )
 
-        retained = (
-            labels["label"] == 0
-        ).sum()
+    print(
+        f"Retained (Label 0):      "
+        f"{retained:,} "
+        f"({retained / total_customers * 100:.2f}%)"
+    )
 
-        churned = (
-            labels["label"] == 1
-        ).sum()
+    print(
+        f"Churned (Label 1):       "
+        f"{churned:,} "
+        f"({churned / total_customers * 100:.2f}%)"
+    )
 
-        censored = (
-            labels["censored"] == True
-        ).sum()
+    print(
+        f"Censored Customers:      "
+        f"{censored:,} "
+        f"({censored / total_customers * 100:.2f}%)"
+    )
 
-        print(
-            f"Retained (Label 0):      "
-            f"{retained:,} "
-            f"({retained / len(labels) * 100:.2f}%)"
-        )
+    print("=" * 65)
 
-        print(
-            f"Churned (Label 1):       "
-            f"{churned:,} "
-            f"({churned / len(labels) * 100:.2f}%)"
-        )
+    # --------------------------------------------------------
+    # Save to MySQL
+    # --------------------------------------------------------
 
-        print(
-            f"Censored Customers:     "
-            f"{censored:,} "
-            f"({censored / len(labels) * 100:.2f}%)"
-        )
+    save_labels_to_db(
+        engine,
+        labels,
+        table_name="customer_churn_labels",
+    )
 
-    print("=" * 70)
+    # --------------------------------------------------------
+    # Save CSV
+    # --------------------------------------------------------
 
-    # ======================================================
-    # SAVE CSV
-    # ======================================================
-
-    output_file = "customer_churn_labels.csv"
+    output_path = PROJECT_ROOT / "customer_churn_labels.csv"
 
     labels.to_csv(
-        output_file,
-        index=False
+        output_path,
+        index=False,
     )
 
     print(
-        f"\nCSV File Saved: "
-        f"{output_file}"
+        f"\nCSV saved -> {output_path}"
     )
 
-    # ======================================================
-    # PRINT FIRST 10 ROWS
-    # ======================================================
+    print("\nProcess completed successfully.")
 
-    print("\n" + "=" * 70)
-    print(
-        "FINAL LABELED CUSTOMER OUTPUT "
-        "(FIRST 10 ROWS)"
-    )
-    print("=" * 70)
-
-    if not labels.empty:
-
-        print(
-            labels.head(10).to_string(
-                index=False
-            )
-        )
-
-    else:
-
-        print(
-            "No customer records found."
-        )
-
-    print("=" * 70)
-
-    print(
-        f"Final Output Shape: "
-        f"{labels.shape}"
-    )
-
-    # ======================================================
-    # SAVE TO MYSQL
-    # ======================================================
-
-    if not labels.empty:
-
-        save_labels_to_db(
-            labels,
-            "customer_churn_labels"
-        )
-
-    print(
-        "\nProcess completed successfully."
-    )
