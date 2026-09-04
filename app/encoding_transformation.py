@@ -1,4 +1,3 @@
-
 from pathlib import Path
 
 import numpy as np
@@ -8,30 +7,15 @@ from app.database import engine
 
 
 # ============================================================
-# PATHS
-# ============================================================
-
-BASE_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = BASE_DIR.parent
-
-# Optional CSV backup output
-OUTPUT_PATH = (
-    PROJECT_ROOT
-    / "outputs"
-    / "features_encoded.csv"
-)
-
-
-# ============================================================
 # MYSQL TABLE NAMES
 # ============================================================
 
 # INPUT TABLE
-# This table should contain the data that was previously
-# stored in customer_features_with_labels.csv
+# Data is loaded directly from this MySQL table.
 INPUT_DATABASE_TABLE = "customer_features_with_labels"
 
 # OUTPUT TABLE
+# Transformed data is saved to this MySQL table.
 DATABASE_TABLE = "features_encoded"
 
 
@@ -90,8 +74,8 @@ def load_data():
     """
     Load the customer-level dataset directly from MySQL.
 
-    The input table replaces the CSV file that was previously
-    used by the pipeline.
+    The input table replaces the CSV file that was
+    previously used by the pipeline.
     """
 
     print("\nLoading input dataset from MySQL...")
@@ -345,7 +329,6 @@ def validate_output(
         "  Customer ID check: OK"
     )
 
-
     # --------------------------------------------------------
     # Duplicate Customer ID
     # --------------------------------------------------------
@@ -365,7 +348,6 @@ def validate_output(
         "  Duplicate customer ID check: OK"
     )
 
-
     # --------------------------------------------------------
     # Row Count
     # --------------------------------------------------------
@@ -379,7 +361,6 @@ def validate_output(
     print(
         "  Row count check: OK"
     )
-
 
     # --------------------------------------------------------
     # Churn Label
@@ -395,7 +376,6 @@ def validate_output(
         "  Churn label: OK"
     )
 
-
     # --------------------------------------------------------
     # Censored Flag
     # --------------------------------------------------------
@@ -409,7 +389,6 @@ def validate_output(
     print(
         "  Censored flag: OK"
     )
-
 
     # --------------------------------------------------------
     # Infinite Values
@@ -436,7 +415,6 @@ def validate_output(
     print(
         "  Infinite value check: OK"
     )
-
 
     # --------------------------------------------------------
     # Frequency Encoding Check
@@ -468,7 +446,6 @@ def validate_output(
         "  Frequency encoding check: OK"
     )
 
-
     # --------------------------------------------------------
     # One-Hot Encoding Check
     # --------------------------------------------------------
@@ -488,7 +465,6 @@ def validate_output(
     print(
         "  One-hot encoding check: OK"
     )
-
 
     # --------------------------------------------------------
     # Log1p Check
@@ -523,7 +499,6 @@ def validate_output(
         "  log1p transformation check: OK"
     )
 
-
     # --------------------------------------------------------
     # Important Columns
     # --------------------------------------------------------
@@ -555,7 +530,6 @@ def validate_output(
     print(
         "  ID/date/label preservation check: OK"
     )
-
 
     # --------------------------------------------------------
     # Final Summary
@@ -595,13 +569,11 @@ def transform_data(df):
 
     print("=" * 70)
 
-
     # --------------------------------------------------------
     # Step 1: Frequency Encoding
     # --------------------------------------------------------
 
     df = frequency_encode(df)
-
 
     # --------------------------------------------------------
     # Step 2: One-Hot Encoding
@@ -609,54 +581,13 @@ def transform_data(df):
 
     df = one_hot_encode(df)
 
-
     # --------------------------------------------------------
     # Step 3: log1p Transformation
     # --------------------------------------------------------
 
     df = apply_log1p(df)
 
-
     return df
-
-
-# ============================================================
-# SAVE OUTPUT TO CSV
-# ============================================================
-
-def save_output(df):
-    """
-    Save the final transformed dataset to CSV
-    as an optional backup.
-    """
-
-    OUTPUT_PATH.parent.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    df.to_csv(
-        OUTPUT_PATH,
-        index=False
-    )
-
-    print("\n")
-    print("=" * 70)
-
-    print(
-        "CSV BACKUP CREATED"
-    )
-
-    print("=" * 70)
-
-    print(
-        f"\nBackup file:"
-        f"\n{OUTPUT_PATH}"
-    )
-
-    print(
-        f"\nFinal shape: {df.shape}"
-    )
 
 
 # ============================================================
@@ -721,13 +652,11 @@ def main():
 
     print("=" * 70)
 
-
     # --------------------------------------------------------
     # Step 1: Load input dataset FROM MYSQL
     # --------------------------------------------------------
 
     original_df = load_data()
-
 
     # --------------------------------------------------------
     # Step 2: Apply transformations
@@ -736,7 +665,6 @@ def main():
     transformed_df = transform_data(
         original_df
     )
-
 
     # --------------------------------------------------------
     # Step 3: Validate final dataset
@@ -747,24 +675,13 @@ def main():
         original_df
     )
 
-
     # --------------------------------------------------------
-    # Step 4: Save optional CSV backup
-    # --------------------------------------------------------
-
-    save_output(
-        transformed_df
-    )
-
-
-    # --------------------------------------------------------
-    # Step 5: Save transformed data to MySQL
+    # Step 4: Save transformed data to MySQL
     # --------------------------------------------------------
 
     save_to_database(
         transformed_df
     )
-
 
     # --------------------------------------------------------
     # Final message
@@ -798,7 +715,6 @@ def main():
         f"Output rows        : "
         f"{len(transformed_df):,}"
     )
-
 
 
 # ============================================================
