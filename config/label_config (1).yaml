@@ -1,0 +1,16 @@
+reference_date: "2018-09-01"
+
+# Return window (days) used to decide retained vs. churned.
+
+return_window_days: 180
+
+# Order statuses treated as invalid / not counted as a real purchase event
+# when determining a customer's first order or any repeat order.
+excluded_order_statuses:
+  - "canceled"
+  - "unavailable"
+
+# Customers who haven't had return_window_days pass since their order
+# haven't had enough time to be observed as retained or churned.
+# These rows are excluded from the training dataset (censored = True).
+exclude_censored_customers: false
