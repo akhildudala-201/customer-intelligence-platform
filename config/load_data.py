@@ -267,6 +267,16 @@ def load_pipeline_inputs() -> tuple[dict[str, pd.DataFrame], dict[str, Any]]:
     return tables, config
 
 
+def save_cleaned_tables(tables: dict[str, pd.DataFrame], prefix: str = "cleaned_") -> None:
+    """Persist cleaned pipeline tables back to MySQL without overwriting the raw tables."""
+    engine = _get_engine()
+    with engine.begin() as connection:
+        for table_name, df in tables.items():
+            target_name = f"{prefix}{table_name}"
+            df.to_sql(target_name, con=connection, if_exists="replace", index=False)
+            print(f"Saved cleaned table -> {target_name} ({len(df):,} rows)")
+
+
 def main() -> None:
     """Load point-in-time-safe inputs directly from MySQL."""
     pipeline_tables, pipeline_config = load_pipeline_inputs()
@@ -276,6 +286,7 @@ def main() -> None:
         f"{len(pipeline_tables['orders']):,} rows"
     )
     print(f"Reference date: {pipeline_config['reference_date'].date()}")
+    save_cleaned_tables(pipeline_tables)
 
 
 if __name__ == "__main__":
