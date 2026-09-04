@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pandas as pd
-import yaml
 from sqlalchemy import text
 
 from app.database import engine
@@ -13,21 +12,6 @@ from app.database import engine
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent.parent
-
-CONFIG_PATH = PROJECT_ROOT / "app" / "config" / "feature_config.yaml"
-
-
-# ============================================================
-# CONFIG
-# ============================================================
-
-def load_config():
-    """Load feature engineering configuration."""
-
-    with open(CONFIG_PATH, "r", encoding="utf-8") as file:
-        config = yaml.safe_load(file)
-
-    return config
 
 
 # ============================================================
@@ -155,17 +139,27 @@ def build_rfm_features(reference_date):
         rfm["last_purchase_date"]
     )
 
+    # --------------------------------------------------------
     # Recency
+    # --------------------------------------------------------
+
     rfm["recency_days"] = (
         reference_date
         - rfm["last_purchase_date"]
     ).dt.days
 
-    # Average value of one order
+    # --------------------------------------------------------
+    # Average order value
+    # --------------------------------------------------------
+
     rfm["avg_order_value"] = (
         rfm["monetary_value"]
         / rfm["frequency"]
     )
+
+    # --------------------------------------------------------
+    # Keep required RFM features
+    # --------------------------------------------------------
 
     rfm = rfm[
         [
@@ -562,7 +556,10 @@ def build_product_features(reference_date):
             }
         )
 
-    # Average number of items in one order
+    # --------------------------------------------------------
+    # Average items per order
+    # --------------------------------------------------------
+
     products["avg_items_per_order"] = (
         products["total_items"]
         / products["order_count"]
@@ -614,9 +611,6 @@ def build_product_features(reference_date):
             }
         )
 
-    # Highest number of purchased items first.
-    # Product category name is used as a deterministic
-    # tie-breaker.
     categories = categories.sort_values(
         by=[
             "customer_unique_id",
@@ -661,7 +655,7 @@ def build_product_features(reference_date):
     )
 
     # --------------------------------------------------------
-    # Keep only required product features
+    # Keep required product features
     # --------------------------------------------------------
 
     products = products[
@@ -838,10 +832,6 @@ def build_time_features(reference_date):
         validate="one_to_one"
     )
 
-    # --------------------------------------------------------
-    # Print result
-    # --------------------------------------------------------
-
     print(
         f"Time features created: "
         f"{len(time_features):,} customers"
@@ -849,18 +839,20 @@ def build_time_features(reference_date):
 
     return time_features
 
+
 # ============================================================
 # GEOGRAPHY FEATURES
 # ============================================================
 
 def build_geography_features(reference_date):
+
     """
-    Assign each customer their most-frequently-used city/state,
-    not simply the alphabetically last one. This mirrors the
-    dominant-value pattern used for preferred_payment_type and
-    dominant_product_category, so a customer with mixed shipping
-    addresses is labeled by where they actually order from most,
-    with a deterministic (city, state) tie-breaker.
+    Assign each customer their most frequently used city/state.
+
+    If a customer has multiple locations, the location with the
+    highest number of orders is selected.
+
+    City and state are used as deterministic tie-breakers.
     """
 
     print("\nBuilding geography features...")
@@ -900,8 +892,10 @@ def build_geography_features(reference_date):
             }
         )
 
-    # Most-used location first. City/state used as a
-    # deterministic tie-breaker.
+    # --------------------------------------------------------
+    # Select most frequently used location
+    # --------------------------------------------------------
+
     geography = geography.sort_values(
         by=[
             "customer_unique_id",
@@ -1049,6 +1043,7 @@ def clean_features(features):
     # --------------------------------------------------------
 
     numeric_columns = [
+
         # RFM
         "recency_days",
         "frequency",
@@ -1063,18 +1058,18 @@ def clean_features(features):
         "delivered_rate",
         "single_order_customer",
 
-        # Product
-        "total_items",
-        "unique_products",
-        "unique_categories",
-        "avg_items_per_order",
-
         # Payment
         "avg_payment_installments",
 
         # Reviews
         "avg_review_score",
         "review_count",
+
+        # Product
+        "total_items",
+        "unique_products",
+        "unique_categories",
+        "avg_items_per_order",
 
         # Fulfillment
         "avg_delivery_days",
@@ -1392,16 +1387,6 @@ def main():
     print("CustomerSphere")
     print("Feature Engineering")
     print("=" * 60)
-
-    # --------------------------------------------------------
-    # Load configuration
-    # --------------------------------------------------------
-
-    config = load_config()
-
-    # Avoid unused-variable warning while keeping
-    # configuration loading available for future settings.
-    _ = config
 
     # --------------------------------------------------------
     # Get reference date dynamically
