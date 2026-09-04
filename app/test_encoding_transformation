@@ -1,0 +1,173 @@
+import numpy as np
+import pandas as pd
+import pytest
+
+from feature_engineering.encoding_transformation import (
+    frequency_encode,
+    one_hot_encode,
+    apply_log1p,
+)
+
+
+# ============================================================
+# TEST 1: FREQUENCY ENCODING
+# ============================================================
+
+def test_frequency_encode():
+    df = pd.DataFrame({
+        "dominant_product_category": [
+            "health",
+            "health",
+            "electronics",
+            "fashion",
+        ],
+        "customer_city_state": [
+            "SP_Sao Paulo",
+            "SP_Sao Paulo",
+            "RJ_Rio",
+            "MG_Belo Horizonte",
+        ],
+    })
+
+    result = frequency_encode(df)
+
+    # Original columns should be removed
+    assert "dominant_product_category" not in result.columns
+    assert "customer_city_state" not in result.columns
+
+    # Frequency columns should exist
+    assert (
+        "dominant_product_category_frequency"
+        in result.columns
+    )
+
+    assert (
+        "customer_city_state_frequency"
+        in result.columns
+    )
+
+    # health appears 2 out of 4 times
+    assert np.isclose(
+        result.loc[0, "dominant_product_category_frequency"],
+        0.5,
+    )
+
+    # electronics appears 1 out of 4 times
+    assert np.isclose(
+        result.loc[2, "dominant_product_category_frequency"],
+        0.25,
+    )
+
+
+# ============================================================
+# TEST 2: ONE-HOT ENCODING
+# ============================================================
+
+def test_one_hot_encode():
+    df = pd.DataFrame({
+        "latest_order_status": [
+            "delivered",
+            "shipped",
+            "delivered",
+        ],
+        "preferred_payment_type": [
+            "credit_card",
+            "boleto",
+            "credit_card",
+        ],
+    })
+
+    result = one_hot_encode(df)
+
+    # Original categorical columns should be removed
+    assert "latest_order_status" not in result.columns
+    assert "preferred_payment_type" not in result.columns
+
+    # One-hot columns should exist
+    assert (
+        "latest_order_status_delivered"
+        in result.columns
+    )
+
+    assert (
+        "latest_order_status_shipped"
+        in result.columns
+    )
+
+    assert (
+        "preferred_payment_type_credit_card"
+        in result.columns
+    )
+
+    assert (
+        "preferred_payment_type_boleto"
+        in result.columns
+    )
+
+    # Check actual encoded values
+    assert result.loc[0, "latest_order_status_delivered"] == 1
+    assert result.loc[1, "latest_order_status_shipped"] == 1
+
+    assert result.loc[0, "preferred_payment_type_credit_card"] == 1
+    assert result.loc[1, "preferred_payment_type_boleto"] == 1
+
+
+# ============================================================
+# TEST 3: LOG1P TRANSFORMATION
+# ============================================================
+
+def test_apply_log1p():
+    df = pd.DataFrame({
+        "recency_days": [0, 1, 10, 100],
+        "frequency": [0, 1, 5, 10],
+        "monetary_value": [0, 100, 500, 1000],
+        "avg_order_value": [0, 50, 100, 200],
+    })
+
+    result = apply_log1p(df)
+
+    # Check log1p calculations
+    assert np.isclose(
+        result.loc[0, "recency_days"],
+        np.log1p(0),
+    )
+
+    assert np.isclose(
+        result.loc[1, "recency_days"],
+        np.log1p(1),
+    )
+
+    assert np.isclose(
+        result.loc[2, "frequency"],
+        np.log1p(5),
+    )
+
+    assert np.isclose(
+        result.loc[3, "monetary_value"],
+        np.log1p(1000),
+    )
+
+    # No infinite values
+    assert np.isfinite(
+        result[
+            [
+                "recency_days",
+                "frequency",
+                "monetary_value",
+                "avg_order_value",
+            ]
+        ].to_numpy()
+    ).all()
+
+
+# ============================================================
+# TEST 4: LOG1P SHOULD REJECT NEGATIVE VALUES
+# ============================================================
+
+def test_log1p_rejects_negative_values():
+    df = pd.DataFrame({
+        "recency_days": [0, 10, -5],
+    })
+
+    with pytest.raises(ValueError):
+        apply_log1p(df)
