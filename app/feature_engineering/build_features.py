@@ -5,6 +5,7 @@ from sqlalchemy import text
 
 from app.database import engine
 
+
 # ============================================================
 # PATHS
 # ============================================================
@@ -16,16 +17,9 @@ PROJECT_ROOT = BASE_DIR.parent.parent
 # ============================================================
 # DATABASE HELPER
 # ============================================================
-# Most feature functions need to do the same small piece of work:
-#   1. open a database connection
-#   2. run a SQL query
-#   3. load the result into a Pandas DataFrame
-#
-# Keeping this in one function avoids repeating that boilerplate.
-# ============================================================
 
 def read_query(query, reference_date):
-    """Run a SQL query and return the result as a Pandas DataFrame."""
+    """Execute a parameterized SQL query and return the result as a DataFrame."""
     with engine.connect() as connection:
         return pd.read_sql(
             query,
@@ -35,15 +29,15 @@ def read_query(query, reference_date):
 
 
 # ============================================================
-# REFERENCE DATE (prevents the feature engineering from accidentally using data beyond the analysis point.)
+# REFERENCE DATE
 # ============================================================
 
 def get_reference_date():
     """
-    Get the latest order purchase date from the database.
+    Return the latest order purchase date available in the database.
 
-    All customer features are calculated using
-    complete customer history up to this date.
+    Using a dynamic reference date prevents features from including
+    data beyond the analysis point.
     """
 
     query = text("""
@@ -64,7 +58,7 @@ def get_reference_date():
 
 
 # ============================================================
-# CUSTOMER BASE (creates the list of customers that will appear in the final dataset.)
+# CUSTOMER BASE
 # ============================================================
 
 def build_customer_base(reference_date):
@@ -101,14 +95,6 @@ def build_customer_base(reference_date):
 
 # ============================================================
 # RFM FEATURES
-# ============================================================
-# RFM = Recency, Frequency, Monetary Value.
-#
-# Recency  -> How recently did the customer buy?
-# Frequency -> How many different orders did they make?
-# Monetary -> How much did they spend on items + freight?
-#
-# These are calculated at customer_unique_id level.
 # ============================================================
 
 def build_rfm_features(reference_date):
@@ -159,29 +145,17 @@ def build_rfm_features(reference_date):
         rfm["last_purchase_date"]
     )
 
-    # --------------------------------------------------------
-    # Recency
-    # --------------------------------------------------------
-
     rfm["recency_days"] = (
         reference_date
         - rfm["last_purchase_date"]
     ).dt.days
-
-    # --------------------------------------------------------
-    # Average order value
-    # --------------------------------------------------------
 
     rfm["avg_order_value"] = (
         rfm["monetary_value"]
         / rfm["frequency"]
     )
 
-    # --------------------------------------------------------
-    # Keep required RFM features
-    # --------------------------------------------------------
-
-    rfm = rfm[
+    return rfm[
         [
             "customer_unique_id",
             "recency_days",
@@ -191,24 +165,9 @@ def build_rfm_features(reference_date):
         ]
     ]
 
-    print(
-        f"RFM features created: "
-        f"{len(rfm):,} customers"
-    )
-
-    return rfm
-
 
 # ============================================================
 # ORDER BEHAVIOR FEATURES
-# ============================================================
-# This group describes what happened to the customer's orders:
-# delivered, canceled, shipped, unavailable, etc.
-#
-# We also calculate:
-# - delivered_rate
-# - whether the customer has only one order
-# - the status of their most recent order
 # ============================================================
 
 def build_order_features(reference_date):
@@ -289,34 +248,19 @@ def build_order_features(reference_date):
             c.customer_unique_id
     """)
 
-    orders = read_query(
+    return read_query(
         query,
         reference_date
     )
-
-    print(
-        f"Order behavior features created: "
-        f"{len(orders):,} customers"
-    )
-
-    return orders
 
 
 # ============================================================
 # PAYMENT FEATURES
 # ============================================================
-# Two payment behaviors are captured:
-# 1. preferred_payment_type -> the payment method used most often
-# 2. avg_payment_installments -> average installments across orders
-# ============================================================
 
 def build_payment_features(reference_date):
 
     print("\nBuilding payment features...")
-
-    # --------------------------------------------------------
-    # Preferred payment type (the payment method the customer uses most often.)
-    # --------------------------------------------------------
 
     payment_type_query = text("""
         SELECT
@@ -383,10 +327,6 @@ def build_payment_features(reference_date):
         )
     )
 
-    # --------------------------------------------------------
-    # Average payment installments
-    # --------------------------------------------------------
-
     order_payment_query = text("""
         SELECT
             o.order_id,
@@ -425,10 +365,6 @@ def build_payment_features(reference_date):
         ["order_avg_installments"]
         .mean()
         .reset_index()
-    )
-
-    customer_installments = (
-        customer_installments
         .rename(
             columns={
                 "order_avg_installments":
@@ -437,31 +373,16 @@ def build_payment_features(reference_date):
         )
     )
 
-    # --------------------------------------------------------
-    # Merge payment features
-    # --------------------------------------------------------
-
-    payment_features = preferred_payment.merge(
+    return preferred_payment.merge(
         customer_installments,
         on="customer_unique_id",
         how="outer",
         validate="one_to_one"
     )
 
-    print(
-        f"Payment features created: "
-        f"{len(payment_features):,} customers"
-    )
-
-    return payment_features
-
 
 # ============================================================
 # REVIEW FEATURES
-# ============================================================
-# These features describe customer feedback:
-# - avg_review_score -> average rating given by the customer
-# - review_count -> number of reviews
 # ============================================================
 
 def build_review_features(reference_date):
@@ -502,37 +423,19 @@ def build_review_features(reference_date):
             c.customer_unique_id
     """)
 
-    reviews = read_query(
+    return read_query(
         query,
         reference_date
     )
-
-    print(
-        f"Review features created: "
-        f"{len(reviews):,} customers"
-    )
-
-    return reviews
 
 
 # ============================================================
 # PRODUCT FEATURES
 # ============================================================
-# These features describe what and how much the customer buys:
-# - total_items
-# - unique_products
-# - unique_categories
-# - dominant_product_category
-# - avg_items_per_order
-# ============================================================
 
 def build_product_features(reference_date):
 
     print("\nBuilding product features...")
-
-    # --------------------------------------------------------
-    # Product quantity and diversity
-    # --------------------------------------------------------
 
     product_query = text("""
         SELECT
@@ -579,18 +482,10 @@ def build_product_features(reference_date):
         reference_date
     )
 
-    # --------------------------------------------------------
-    # Average items per order
-    # --------------------------------------------------------
-
     products["avg_items_per_order"] = (
         products["total_items"]
         / products["order_count"]
     )
-
-    # --------------------------------------------------------
-    # Dominant product category (product category the customer buys the most from.)
-    # --------------------------------------------------------
 
     category_query = text("""
         SELECT
@@ -617,7 +512,6 @@ def build_product_features(reference_date):
             c.customer_unique_id IS NOT NULL
             AND o.order_purchase_timestamp IS NOT NULL
             AND o.order_purchase_timestamp <= :reference_date
-
             AND p.product_category_name IS NOT NULL
 
         GROUP BY
@@ -662,10 +556,6 @@ def build_product_features(reference_date):
         )
     )
 
-    # --------------------------------------------------------
-    # Merge dominant category
-    # --------------------------------------------------------
-
     products = products.merge(
         dominant_category,
         on="customer_unique_id",
@@ -673,11 +563,7 @@ def build_product_features(reference_date):
         validate="one_to_one"
     )
 
-    # --------------------------------------------------------
-    # Keep required product features
-    # --------------------------------------------------------
-
-    products = products[
+    return products[
         [
             "customer_unique_id",
             "total_items",
@@ -688,16 +574,9 @@ def build_product_features(reference_date):
         ]
     ]
 
-    print(
-        f"Product features created: "
-        f"{len(products):,} customers"
-    )
-
-    return products
-
 
 # ============================================================
-# FULFILLMENT FEATURES (the customer's typical delivery experience.)
+# FULFILLMENT FEATURES
 # ============================================================
 
 def build_fulfillment_features(reference_date):
@@ -722,53 +601,29 @@ def build_fulfillment_features(reference_date):
 
         WHERE
             c.customer_unique_id IS NOT NULL
-
             AND o.order_purchase_timestamp IS NOT NULL
             AND o.order_purchase_timestamp <= :reference_date
-
             AND o.order_status = 'delivered'
-
             AND o.order_delivered_customer_date IS NOT NULL
-
             AND o.order_delivered_customer_date <= :reference_date
 
         GROUP BY
             c.customer_unique_id
     """)
 
-    fulfillment = read_query(
+    return read_query(
         query,
         reference_date
     )
-
-    print(
-        f"Fulfillment features created: "
-        f"{len(fulfillment):,} customers"
-    )
-
-    return fulfillment
 
 
 # ============================================================
 # TIME BEHAVIOR FEATURES
 # ============================================================
-# These features describe the customer's purchasing timeline:
-# - first_purchase_date
-# - last_purchase_date
-# - tenure_days
-# - active_purchase_days
-#
-# The SQL query intentionally retrieves every purchase timestamp
-# because active_purchase_days needs the distinct calendar dates.
-# ============================================================
 
 def build_time_features(reference_date):
 
     print("\nBuilding time behavior features...")
-
-    # --------------------------------------------------------
-    # Get every customer's purchase dates
-    # --------------------------------------------------------
 
     query = text("""
         SELECT
@@ -799,10 +654,6 @@ def build_time_features(reference_date):
         orders["order_purchase_timestamp"]
     )
 
-    # --------------------------------------------------------
-    # First and last purchase
-    # --------------------------------------------------------
-
     time_features = (
         orders
         .groupby("customer_unique_id")
@@ -814,18 +665,10 @@ def build_time_features(reference_date):
         .reset_index()
     )
 
-    # --------------------------------------------------------
-    # Tenure
-    # --------------------------------------------------------
-
     time_features["tenure_days"] = (
         reference_date
         - time_features["first_purchase_date"]
     ).dt.days
-
-    # --------------------------------------------------------
-    # Active purchase days
-    # --------------------------------------------------------
 
     active_days = (
         orders
@@ -845,19 +688,12 @@ def build_time_features(reference_date):
         )
     )
 
-    time_features = time_features.merge(
+    return time_features.merge(
         active_days,
         on="customer_unique_id",
         how="left",
         validate="one_to_one"
     )
-
-    print(
-        f"Time features created: "
-        f"{len(time_features):,} customers"
-    )
-
-    return time_features
 
 
 # ============================================================
@@ -899,10 +735,6 @@ def build_geography_features(reference_date):
         reference_date
     )
 
-    # --------------------------------------------------------
-    # Select most frequently used location
-    # --------------------------------------------------------
-
     geography = geography.sort_values(
         by=[
             "customer_unique_id",
@@ -932,10 +764,6 @@ def build_geography_features(reference_date):
         ]
     )
 
-    # --------------------------------------------------------
-    # Combine city and state
-    # --------------------------------------------------------
-
     dominant_location["customer_city_state"] = (
         dominant_location["customer_city"].fillna("")
         + ", "
@@ -946,65 +774,36 @@ def build_geography_features(reference_date):
         dominant_location["customer_city_state"]
         .str.strip()
         .str.strip(",")
-    )
-
-    dominant_location["customer_city_state"] = (
-        dominant_location["customer_city_state"]
         .replace("", "unknown")
     )
 
-    dominant_location = dominant_location[
+    return dominant_location[
         [
             "customer_unique_id",
             "customer_city_state",
         ]
     ]
 
-    print(
-        f"Geography features created: "
-        f"{len(dominant_location):,} customers"
-    )
-
-    return dominant_location
-
 
 # ============================================================
-# MERGE ALL FEATURES
-# ============================================================
-# LEFT JOIN is important here: the customer base is the master list,
-# so every valid customer must remain even if a particular feature
-# group has no matching row. The one-to-one validation prevents
-# accidental row multiplication.
+# MERGE FEATURES
 # ============================================================
 
 def merge_features(customer_base, feature_tables):
 
     print("\nMerging all feature groups...")
 
-    # Start with the master customer list.
     features = customer_base.copy()
-
-    # This is the number of customers we must have at the end.
     original_count = len(features)
 
     for name, table in feature_tables.items():
 
         print(f"  Merging {name}...")
 
-        # ----------------------------------------------------
-        # Check table structure
-        # ----------------------------------------------------
-
         if "customer_unique_id" not in table.columns:
-
             raise ValueError(
-                f"{name} does not contain "
-                f"'customer_unique_id'."
+                f"{name} does not contain 'customer_unique_id'."
             )
-
-        # ----------------------------------------------------
-        # Check duplicate customers
-        # ----------------------------------------------------
 
         duplicate_count = (
             table["customer_unique_id"]
@@ -1013,19 +812,10 @@ def merge_features(customer_base, feature_tables):
         )
 
         if duplicate_count > 0:
-
             raise ValueError(
                 f"{name} contains "
                 f"{duplicate_count} duplicate customers."
             )
-
-        # ----------------------------------------------------
-        # Merge
-        # ----------------------------------------------------
-        # validate="one_to_one" means: one customer in the current
-        # table must match at most one customer in the feature table.
-        # If not, Pandas raises an error instead of silently creating
-        # duplicate customers.
 
         features = features.merge(
             table,
@@ -1034,15 +824,9 @@ def merge_features(customer_base, feature_tables):
             validate="one_to_one"
         )
 
-        # ----------------------------------------------------
-        # Customer count must never increase
-        # ----------------------------------------------------
-
         if len(features) != original_count:
-
             raise ValueError(
-                f"Customer count changed "
-                f"after merging {name}."
+                f"Customer count changed after merging {name}."
             )
 
     return features
@@ -1056,59 +840,35 @@ def clean_features(features):
 
     print("\nCleaning feature values...")
 
-    # --------------------------------------------------------
-    # Numeric features
-    # --------------------------------------------------------
-
     numeric_columns = [
-
-        # RFM
         "recency_days",
         "frequency",
         "monetary_value",
         "avg_order_value",
-
-        # Order behavior
         "delivered_orders",
         "canceled_orders",
         "shipped_orders",
         "unavailable_orders",
         "delivered_rate",
         "single_order_customer",
-
-        # Payment
         "avg_payment_installments",
-
-        # Reviews
         "avg_review_score",
         "review_count",
-
-        # Product
         "total_items",
         "unique_products",
         "unique_categories",
         "avg_items_per_order",
-
-        # Fulfillment
         "avg_delivery_days",
-
-        # Time
         "tenure_days",
         "active_purchase_days",
     ]
 
     for column in numeric_columns:
-
         if column in features.columns:
-
             features[column] = pd.to_numeric(
                 features[column],
                 errors="coerce"
             )
-
-    # --------------------------------------------------------
-    # Count features
-    # --------------------------------------------------------
 
     count_columns = [
         "frequency",
@@ -1124,29 +884,15 @@ def clean_features(features):
     ]
 
     for column in count_columns:
-
         if column in features.columns:
-
-            features[column] = (
-                features[column]
-                .fillna(0)
-            )
-
-    # --------------------------------------------------------
-    # Single order flag
-    # --------------------------------------------------------
+            features[column] = features[column].fillna(0)
 
     if "single_order_customer" in features.columns:
-
         features["single_order_customer"] = (
             features["single_order_customer"]
             .fillna(0)
             .astype(int)
         )
-
-    # --------------------------------------------------------
-    # Categorical features
-    # --------------------------------------------------------
 
     categorical_columns = [
         "latest_order_status",
@@ -1156,17 +902,11 @@ def clean_features(features):
     ]
 
     for column in categorical_columns:
-
         if column in features.columns:
-
             features[column] = (
                 features[column]
                 .fillna("unknown")
             )
-
-    # --------------------------------------------------------
-    # Date features
-    # --------------------------------------------------------
 
     date_columns = [
         "first_purchase_date",
@@ -1174,9 +914,7 @@ def clean_features(features):
     ]
 
     for column in date_columns:
-
         if column in features.columns:
-
             features[column] = pd.to_datetime(
                 features[column],
                 errors="coerce"
@@ -1193,20 +931,10 @@ def validate_features(features, customer_base):
 
     print("\nValidating final feature table...")
 
-    # --------------------------------------------------------
-    # Customer count
-    # --------------------------------------------------------
-
     if len(features) != len(customer_base):
-
         raise ValueError(
-            "Final customer count does not "
-            "match customer base."
+            "Final customer count does not match customer base."
         )
-
-    # --------------------------------------------------------
-    # Duplicate customers
-    # --------------------------------------------------------
 
     duplicate_count = (
         features["customer_unique_id"]
@@ -1215,34 +943,17 @@ def validate_features(features, customer_base):
     )
 
     if duplicate_count > 0:
-
         raise ValueError(
             f"Final feature table contains "
             f"{duplicate_count} duplicate customers."
         )
 
-    # --------------------------------------------------------
-    # Required columns
-    # --------------------------------------------------------
-
     required_columns = [
-
-        # Customer ID
         "customer_unique_id",
-
-        # ----------------------------------------------------
-        # RFM
-        # ----------------------------------------------------
-
         "recency_days",
         "frequency",
         "monetary_value",
         "avg_order_value",
-
-        # ----------------------------------------------------
-        # Order behavior
-        # ----------------------------------------------------
-
         "delivered_orders",
         "canceled_orders",
         "shipped_orders",
@@ -1250,56 +961,21 @@ def validate_features(features, customer_base):
         "delivered_rate",
         "single_order_customer",
         "latest_order_status",
-
-        # ----------------------------------------------------
-        # Payment
-        # ----------------------------------------------------
-
         "preferred_payment_type",
         "avg_payment_installments",
-
-        # ----------------------------------------------------
-        # Reviews
-        # ----------------------------------------------------
-
         "avg_review_score",
         "review_count",
-
-        # ----------------------------------------------------
-        # Product
-        # ----------------------------------------------------
-
         "total_items",
         "unique_products",
         "unique_categories",
         "dominant_product_category",
         "avg_items_per_order",
-
-        # ----------------------------------------------------
-        # Fulfillment
-        # ----------------------------------------------------
-
         "avg_delivery_days",
-
-        # ----------------------------------------------------
-        # Time behavior
-        # ----------------------------------------------------
-
         "first_purchase_date",
         "last_purchase_date",
         "tenure_days",
         "active_purchase_days",
-
-        # ----------------------------------------------------
-        # Geography
-        # ----------------------------------------------------
-
         "customer_city_state",
-
-        # ----------------------------------------------------
-        # Reference
-        # ----------------------------------------------------
-
         "reference_date",
     ]
 
@@ -1310,15 +986,10 @@ def validate_features(features, customer_base):
     ]
 
     if missing_columns:
-
         raise ValueError(
             "Missing required features: "
             + ", ".join(missing_columns)
         )
-
-    # --------------------------------------------------------
-    # Check customer ID is not null
-    # --------------------------------------------------------
 
     missing_customer_ids = (
         features["customer_unique_id"]
@@ -1327,7 +998,6 @@ def validate_features(features, customer_base):
     )
 
     if missing_customer_ids > 0:
-
         raise ValueError(
             f"{missing_customer_ids} customers "
             f"have missing customer_unique_id."
@@ -1387,7 +1057,6 @@ def print_summary(features):
     print("\nFinal feature columns:")
 
     for column in features.columns:
-
         print(f"  - {column}")
 
     print("\n")
@@ -1396,19 +1065,6 @@ def print_summary(features):
 
 # ============================================================
 # MAIN
-# ============================================================
-# main() controls the complete pipeline from start to finish.
-# Keeping the steps here in order makes the script easy to follow:
-#
-#   1. Find reference date
-#   2. Build customer base
-#   3. Build each feature group
-#   4. Merge them
-#   5. Add reference date
-#   6. Clean values
-#   7. Validate
-#   8. Save CSV
-#   9. Print summary
 # ============================================================
 
 def main():
@@ -1419,10 +1075,6 @@ def main():
     print("Feature Engineering")
     print("=" * 60)
 
-    # --------------------------------------------------------
-    # Get reference date dynamically
-    # --------------------------------------------------------
-
     reference_date = get_reference_date()
 
     print(
@@ -1430,17 +1082,9 @@ def main():
         f"{reference_date}"
     )
 
-    # --------------------------------------------------------
-    # Build customer base
-    # --------------------------------------------------------
-
     customer_base = build_customer_base(
         reference_date
     )
-
-    # --------------------------------------------------------
-    # Build all feature groups
-    # --------------------------------------------------------
 
     feature_tables = {}
 
@@ -1492,47 +1136,23 @@ def main():
         )
     )
 
-    # --------------------------------------------------------
-    # Merge all feature groups
-    # --------------------------------------------------------
-
     features = merge_features(
         customer_base,
         feature_tables
     )
 
-    # --------------------------------------------------------
-    # Add reference date
-    # --------------------------------------------------------
-
     features["reference_date"] = reference_date
-
-    # --------------------------------------------------------
-    # Clean features
-    # --------------------------------------------------------
 
     features = clean_features(
         features
     )
-
-    # --------------------------------------------------------
-    # Validate
-    # --------------------------------------------------------
 
     features = validate_features(
         features,
         customer_base
     )
 
-    # --------------------------------------------------------
-    # Save
-    # --------------------------------------------------------
-
     save_features(features)
-
-    # --------------------------------------------------------
-    # Summary
-    # --------------------------------------------------------
 
     print_summary(features)
 
@@ -1552,10 +1172,6 @@ def main():
         "All customers with valid orders were retained."
     )
 
-
-# ============================================================
-# RUN
-# ============================================================
 
 if __name__ == "__main__":
     main()
