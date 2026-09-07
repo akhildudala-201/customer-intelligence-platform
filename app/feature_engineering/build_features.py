@@ -5,7 +5,6 @@ from sqlalchemy import text
 
 from app.database import engine
 
-
 # ============================================================
 # PATHS
 # ============================================================
@@ -15,7 +14,28 @@ PROJECT_ROOT = BASE_DIR.parent.parent
 
 
 # ============================================================
-# REFERENCE DATE
+# DATABASE HELPER
+# ============================================================
+# Most feature functions need to do the same small piece of work:
+#   1. open a database connection
+#   2. run a SQL query
+#   3. load the result into a Pandas DataFrame
+#
+# Keeping this in one function avoids repeating that boilerplate.
+# ============================================================
+
+def read_query(query, reference_date):
+    """Run a SQL query and return the result as a Pandas DataFrame."""
+    with engine.connect() as connection:
+        return pd.read_sql(
+            query,
+            connection,
+            params={"reference_date": reference_date}
+        )
+
+
+# ============================================================
+# REFERENCE DATE (prevents the feature engineering from accidentally using data beyond the analysis point.)
 # ============================================================
 
 def get_reference_date():
@@ -44,7 +64,7 @@ def get_reference_date():
 
 
 # ============================================================
-# CUSTOMER BASE
+# CUSTOMER BASE (creates the list of customers that will appear in the final dataset.)
 # ============================================================
 
 def build_customer_base(reference_date):
@@ -66,14 +86,10 @@ def build_customer_base(reference_date):
             AND o.order_purchase_timestamp <= :reference_date
     """)
 
-    with engine.connect() as connection:
-        customers = pd.read_sql(
-            query,
-            connection,
-            params={
-                "reference_date": reference_date
-            }
-        )
+    customers = read_query(
+        query,
+        reference_date
+    )
 
     print(
         f"Customer base created: "
@@ -85,6 +101,14 @@ def build_customer_base(reference_date):
 
 # ============================================================
 # RFM FEATURES
+# ============================================================
+# RFM = Recency, Frequency, Monetary Value.
+#
+# Recency  -> How recently did the customer buy?
+# Frequency -> How many different orders did they make?
+# Monetary -> How much did they spend on items + freight?
+#
+# These are calculated at customer_unique_id level.
 # ============================================================
 
 def build_rfm_features(reference_date):
@@ -126,14 +150,10 @@ def build_rfm_features(reference_date):
             c.customer_unique_id
     """)
 
-    with engine.connect() as connection:
-        rfm = pd.read_sql(
-            query,
-            connection,
-            params={
-                "reference_date": reference_date
-            }
-        )
+    rfm = read_query(
+        query,
+        reference_date
+    )
 
     rfm["last_purchase_date"] = pd.to_datetime(
         rfm["last_purchase_date"]
@@ -181,6 +201,14 @@ def build_rfm_features(reference_date):
 
 # ============================================================
 # ORDER BEHAVIOR FEATURES
+# ============================================================
+# This group describes what happened to the customer's orders:
+# delivered, canceled, shipped, unavailable, etc.
+#
+# We also calculate:
+# - delivered_rate
+# - whether the customer has only one order
+# - the status of their most recent order
 # ============================================================
 
 def build_order_features(reference_date):
@@ -261,14 +289,10 @@ def build_order_features(reference_date):
             c.customer_unique_id
     """)
 
-    with engine.connect() as connection:
-        orders = pd.read_sql(
-            query,
-            connection,
-            params={
-                "reference_date": reference_date
-            }
-        )
+    orders = read_query(
+        query,
+        reference_date
+    )
 
     print(
         f"Order behavior features created: "
@@ -281,13 +305,17 @@ def build_order_features(reference_date):
 # ============================================================
 # PAYMENT FEATURES
 # ============================================================
+# Two payment behaviors are captured:
+# 1. preferred_payment_type -> the payment method used most often
+# 2. avg_payment_installments -> average installments across orders
+# ============================================================
 
 def build_payment_features(reference_date):
 
     print("\nBuilding payment features...")
 
     # --------------------------------------------------------
-    # Preferred payment type
+    # Preferred payment type (the payment method the customer uses most often.)
     # --------------------------------------------------------
 
     payment_type_query = text("""
@@ -318,14 +346,10 @@ def build_payment_features(reference_date):
             op.payment_type
     """)
 
-    with engine.connect() as connection:
-        payment_types = pd.read_sql(
-            payment_type_query,
-            connection,
-            params={
-                "reference_date": reference_date
-            }
-        )
+    payment_types = read_query(
+        payment_type_query,
+        reference_date
+    )
 
     payment_types = payment_types.sort_values(
         by=[
@@ -390,14 +414,10 @@ def build_payment_features(reference_date):
             c.customer_unique_id
     """)
 
-    with engine.connect() as connection:
-        order_installments = pd.read_sql(
-            order_payment_query,
-            connection,
-            params={
-                "reference_date": reference_date
-            }
-        )
+    order_installments = read_query(
+        order_payment_query,
+        reference_date
+    )
 
     customer_installments = (
         order_installments
@@ -439,6 +459,10 @@ def build_payment_features(reference_date):
 # ============================================================
 # REVIEW FEATURES
 # ============================================================
+# These features describe customer feedback:
+# - avg_review_score -> average rating given by the customer
+# - review_count -> number of reviews
+# ============================================================
 
 def build_review_features(reference_date):
 
@@ -478,14 +502,10 @@ def build_review_features(reference_date):
             c.customer_unique_id
     """)
 
-    with engine.connect() as connection:
-        reviews = pd.read_sql(
-            query,
-            connection,
-            params={
-                "reference_date": reference_date
-            }
-        )
+    reviews = read_query(
+        query,
+        reference_date
+    )
 
     print(
         f"Review features created: "
@@ -497,6 +517,13 @@ def build_review_features(reference_date):
 
 # ============================================================
 # PRODUCT FEATURES
+# ============================================================
+# These features describe what and how much the customer buys:
+# - total_items
+# - unique_products
+# - unique_categories
+# - dominant_product_category
+# - avg_items_per_order
 # ============================================================
 
 def build_product_features(reference_date):
@@ -547,14 +574,10 @@ def build_product_features(reference_date):
             c.customer_unique_id
     """)
 
-    with engine.connect() as connection:
-        products = pd.read_sql(
-            product_query,
-            connection,
-            params={
-                "reference_date": reference_date
-            }
-        )
+    products = read_query(
+        product_query,
+        reference_date
+    )
 
     # --------------------------------------------------------
     # Average items per order
@@ -566,7 +589,7 @@ def build_product_features(reference_date):
     )
 
     # --------------------------------------------------------
-    # Dominant product category
+    # Dominant product category (product category the customer buys the most from.)
     # --------------------------------------------------------
 
     category_query = text("""
@@ -602,14 +625,10 @@ def build_product_features(reference_date):
             p.product_category_name
     """)
 
-    with engine.connect() as connection:
-        categories = pd.read_sql(
-            category_query,
-            connection,
-            params={
-                "reference_date": reference_date
-            }
-        )
+    categories = read_query(
+        category_query,
+        reference_date
+    )
 
     categories = categories.sort_values(
         by=[
@@ -678,7 +697,7 @@ def build_product_features(reference_date):
 
 
 # ============================================================
-# FULFILLMENT FEATURES
+# FULFILLMENT FEATURES (the customer's typical delivery experience.)
 # ============================================================
 
 def build_fulfillment_features(reference_date):
@@ -717,14 +736,10 @@ def build_fulfillment_features(reference_date):
             c.customer_unique_id
     """)
 
-    with engine.connect() as connection:
-        fulfillment = pd.read_sql(
-            query,
-            connection,
-            params={
-                "reference_date": reference_date
-            }
-        )
+    fulfillment = read_query(
+        query,
+        reference_date
+    )
 
     print(
         f"Fulfillment features created: "
@@ -736,6 +751,15 @@ def build_fulfillment_features(reference_date):
 
 # ============================================================
 # TIME BEHAVIOR FEATURES
+# ============================================================
+# These features describe the customer's purchasing timeline:
+# - first_purchase_date
+# - last_purchase_date
+# - tenure_days
+# - active_purchase_days
+#
+# The SQL query intentionally retrieves every purchase timestamp
+# because active_purchase_days needs the distinct calendar dates.
 # ============================================================
 
 def build_time_features(reference_date):
@@ -766,14 +790,10 @@ def build_time_features(reference_date):
             o.order_purchase_timestamp
     """)
 
-    with engine.connect() as connection:
-        orders = pd.read_sql(
-            query,
-            connection,
-            params={
-                "reference_date": reference_date
-            }
-        )
+    orders = read_query(
+        query,
+        reference_date
+    )
 
     orders["order_purchase_timestamp"] = pd.to_datetime(
         orders["order_purchase_timestamp"]
@@ -846,15 +866,6 @@ def build_time_features(reference_date):
 
 def build_geography_features(reference_date):
 
-    """
-    Assign each customer their most frequently used city/state.
-
-    If a customer has multiple locations, the location with the
-    highest number of orders is selected.
-
-    City and state are used as deterministic tie-breakers.
-    """
-
     print("\nBuilding geography features...")
 
     query = text("""
@@ -883,14 +894,10 @@ def build_geography_features(reference_date):
             c.customer_state
     """)
 
-    with engine.connect() as connection:
-        geography = pd.read_sql(
-            query,
-            connection,
-            params={
-                "reference_date": reference_date
-            }
-        )
+    geography = read_query(
+        query,
+        reference_date
+    )
 
     # --------------------------------------------------------
     # Select most frequently used location
@@ -964,13 +971,20 @@ def build_geography_features(reference_date):
 # ============================================================
 # MERGE ALL FEATURES
 # ============================================================
+# LEFT JOIN is important here: the customer base is the master list,
+# so every valid customer must remain even if a particular feature
+# group has no matching row. The one-to-one validation prevents
+# accidental row multiplication.
+# ============================================================
 
 def merge_features(customer_base, feature_tables):
 
     print("\nMerging all feature groups...")
 
+    # Start with the master customer list.
     features = customer_base.copy()
 
+    # This is the number of customers we must have at the end.
     original_count = len(features)
 
     for name, table in feature_tables.items():
@@ -1008,6 +1022,10 @@ def merge_features(customer_base, feature_tables):
         # ----------------------------------------------------
         # Merge
         # ----------------------------------------------------
+        # validate="one_to_one" means: one customer in the current
+        # table must match at most one customer in the feature table.
+        # If not, Pandas raises an error instead of silently creating
+        # duplicate customers.
 
         features = features.merge(
             table,
@@ -1378,6 +1396,19 @@ def print_summary(features):
 
 # ============================================================
 # MAIN
+# ============================================================
+# main() controls the complete pipeline from start to finish.
+# Keeping the steps here in order makes the script easy to follow:
+#
+#   1. Find reference date
+#   2. Build customer base
+#   3. Build each feature group
+#   4. Merge them
+#   5. Add reference date
+#   6. Clean values
+#   7. Validate
+#   8. Save CSV
+#   9. Print summary
 # ============================================================
 
 def main():
