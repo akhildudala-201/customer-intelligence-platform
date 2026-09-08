@@ -76,7 +76,6 @@ customer-intelligence-platform/
 ├── tests/                    
 ├── scripts/
 │   └── run_pipeline.py       # orchestrates the full pipeline end-to-end
-├── run_pipeline.py           # thin wrapper: `python run_pipeline.py` at repo root
 ├── .env.example
 ├── .gitignore
 ├── CONTRIBUTING.md
@@ -150,13 +149,13 @@ Then edit `.env` and fill in your real values — at minimum `DB_USER`, `DB_PASS
 Option A — run everything in one command from the repo root:
 
 ```bash
-python run_pipeline.py
+python scripts/run_pipeline.py
 ```
 
 This runs, in order: ingest all CSVs (`--replace`) → build features → build churn labels → merge → encode/transform → select & scale/split. If your data is already ingested and you just want to re-run feature engineering:
 
 ```bash
-python run_pipeline.py --skip-ingest
+python scripts/run_pipeline.py --skip-ingest
 ```
 
 Option B — run each stage individually (useful while debugging one step):
