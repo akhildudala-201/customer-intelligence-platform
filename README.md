@@ -144,7 +144,6 @@ cp .env.example .env
 
 Then edit `.env` and fill in your real values — at minimum `DB_USER`, `DB_PASSWORD`, and `DATASET_DIR` (absolute path to this repo's `data/` folder on your machine). `database.py` reads `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` individually to build the connection — it does **not** read `DATABASE_URL` directly, so keep the two in sync manually if you use both.
 
-**⚠️ Security note:** a real `.env` file (not `.env.example`) with a working-looking password and a teammate's personal machine path was found bundled into this project's zip. `.env` is correctly listed in `.gitignore`, but since it clearly exists on someone's disk with real-looking credentials, treat that password as compromised — rotate it, and double-check with `git log --all -- .env` that it was never actually committed to the repository history.
 
 ### 6. Run the pipeline
 
