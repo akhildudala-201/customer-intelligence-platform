@@ -1,15 +1,8 @@
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
-
 from app.database import engine
-
-
-# INPUT TABLE
 INPUT_DATABASE_TABLE = "customer_features_with_labels"
-
-# OUTPUT TABLE
 DATABASE_TABLE = "features_encoded"
 
 ONE_HOT_COLUMNS = [
