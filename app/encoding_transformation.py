@@ -6,48 +6,21 @@ import pandas as pd
 from app.database import engine
 
 
-# ============================================================
-# MYSQL TABLE NAMES
-# ============================================================
-
 # INPUT TABLE
-# Data is loaded directly from this MySQL table.
 INPUT_DATABASE_TABLE = "customer_features_with_labels"
 
 # OUTPUT TABLE
-# Transformed data is saved to this MySQL table.
 DATABASE_TABLE = "features_encoded"
 
-
-# ============================================================
-# ONE-HOT ENCODING
-# ============================================================
-
-# Low-cardinality categorical features
 ONE_HOT_COLUMNS = [
     "latest_order_status",
     "preferred_payment_type",
 ]
 
-
-# ============================================================
-# FREQUENCY ENCODING
-# ============================================================
-
-# High-cardinality categorical features
 FREQUENCY_ENCODE_COLUMNS = [
     "dominant_product_category",
     "customer_city_state",
 ]
-
-
-# ============================================================
-# LOG1P TRANSFORMATION
-# ============================================================
-
-# Selected skewed numerical/count features
-#
-# log1p(x) = log(1 + x)
 
 LOG1P_COLUMNS = [
     "recency_days",
@@ -64,11 +37,6 @@ LOG1P_COLUMNS = [
     "unique_categories",
     "active_purchase_days",
 ]
-
-
-# ============================================================
-# LOAD DATA FROM MYSQL
-# ============================================================
 
 def load_data():
     """
@@ -124,11 +92,6 @@ def load_data():
 
     return df
 
-
-# ============================================================
-# FREQUENCY ENCODING
-# ============================================================
-
 def frequency_encode(df):
     """
     Apply frequency encoding to high-cardinality
@@ -154,8 +117,7 @@ def frequency_encode(df):
 
         # Handle missing values
         df[column] = df[column].fillna("unknown")
-
-        # Calculate category frequency
+        
         frequency_map = (
             df[column]
             .value_counts(normalize=True)
@@ -166,14 +128,12 @@ def frequency_encode(df):
             f"{column}_frequency"
         )
 
-        # Apply frequency mapping
         df[encoded_column] = (
             df[column]
             .map(frequency_map)
             .fillna(0)
         )
 
-        # Remove original categorical column
         df.drop(
             columns=[column],
             inplace=True
@@ -184,11 +144,6 @@ def frequency_encode(df):
         )
 
     return df
-
-
-# ============================================================
-# ONE-HOT ENCODING
-# ============================================================
 
 def one_hot_encode(df):
     """
@@ -222,7 +177,6 @@ def one_hot_encode(df):
             "unknown"
         )
 
-    # Apply one-hot encoding
     df = pd.get_dummies(
         df,
         columns=available_columns,
@@ -238,11 +192,6 @@ def one_hot_encode(df):
         )
 
     return df
-
-
-# ============================================================
-# LOG1P TRANSFORMATION
-# ============================================================
 
 def apply_log1p(df):
     """
@@ -267,8 +216,7 @@ def apply_log1p(df):
             )
 
             continue
-
-        # Convert column to numeric
+            
         df[column] = pd.to_numeric(
             df[column],
             errors="coerce"
@@ -288,7 +236,6 @@ def apply_log1p(df):
                 f"Cannot apply log1p transformation."
             )
 
-        # Apply log1p
         df[column] = np.log1p(
             df[column]
         )
@@ -299,10 +246,7 @@ def apply_log1p(df):
 
     return df
 
-
-# ============================================================
 # VALIDATE OUTPUT
-# ============================================================
 
 def validate_output(
     df,
@@ -315,9 +259,7 @@ def validate_output(
     print("\nValidating transformed dataset...")
     print("-" * 60)
 
-    # --------------------------------------------------------
     # Customer ID
-    # --------------------------------------------------------
 
     if "customer_unique_id" not in df.columns:
 
@@ -329,9 +271,7 @@ def validate_output(
         "  Customer ID check: OK"
     )
 
-    # --------------------------------------------------------
     # Duplicate Customer ID
-    # --------------------------------------------------------
 
     if (
         df["customer_unique_id"]
@@ -348,9 +288,7 @@ def validate_output(
         "  Duplicate customer ID check: OK"
     )
 
-    # --------------------------------------------------------
     # Row Count
-    # --------------------------------------------------------
 
     if len(df) != len(original_df):
 
@@ -361,10 +299,7 @@ def validate_output(
     print(
         "  Row count check: OK"
     )
-
-    # --------------------------------------------------------
     # Churn Label
-    # --------------------------------------------------------
 
     if "churn_label" not in df.columns:
 
@@ -376,9 +311,6 @@ def validate_output(
         "  Churn label: OK"
     )
 
-    # --------------------------------------------------------
-    # Censored Flag
-    # --------------------------------------------------------
 
     if "censored" not in df.columns:
 
@@ -390,11 +322,8 @@ def validate_output(
         "  Censored flag: OK"
     )
 
-    # --------------------------------------------------------
     # Infinite Values
-    # --------------------------------------------------------
-
-    numeric_df = df.select_dtypes(
+   numeric_df = df.select_dtypes(
         include=np.number
     )
 
@@ -415,14 +344,8 @@ def validate_output(
     print(
         "  Infinite value check: OK"
     )
-
-    # --------------------------------------------------------
-    # Frequency Encoding Check
-    # --------------------------------------------------------
-
-    for column in FREQUENCY_ENCODE_COLUMNS:
-
-        # Original column should be removed
+   for column in FREQUENCY_ENCODE_COLUMNS:
+        
         if column in df.columns:
 
             raise ValueError(
@@ -446,15 +369,7 @@ def validate_output(
         "  Frequency encoding check: OK"
     )
 
-    # --------------------------------------------------------
-    # One-Hot Encoding Check
-    # --------------------------------------------------------
-
     for column in ONE_HOT_COLUMNS:
-
-        # Original categorical column
-        # should no longer exist
-
         if column in df.columns:
 
             raise ValueError(
@@ -465,10 +380,6 @@ def validate_output(
     print(
         "  One-hot encoding check: OK"
     )
-
-    # --------------------------------------------------------
-    # Log1p Check
-    # --------------------------------------------------------
 
     for column in LOG1P_COLUMNS:
 
@@ -499,10 +410,6 @@ def validate_output(
         "  log1p transformation check: OK"
     )
 
-    # --------------------------------------------------------
-    # Important Columns
-    # --------------------------------------------------------
-
     important_columns = [
         "customer_unique_id",
         "churn_label",
@@ -531,10 +438,6 @@ def validate_output(
         "  ID/date/label preservation check: OK"
     )
 
-    # --------------------------------------------------------
-    # Final Summary
-    # --------------------------------------------------------
-
     print("\nOutput validation passed.")
 
     print(
@@ -545,10 +448,6 @@ def validate_output(
         f"Output columns: {len(df.columns):,}"
     )
 
-
-# ============================================================
-# TRANSFORMATION PIPELINE
-# ============================================================
 
 def transform_data(df):
     """
@@ -569,30 +468,13 @@ def transform_data(df):
 
     print("=" * 70)
 
-    # --------------------------------------------------------
-    # Step 1: Frequency Encoding
-    # --------------------------------------------------------
-
     df = frequency_encode(df)
 
-    # --------------------------------------------------------
-    # Step 2: One-Hot Encoding
-    # --------------------------------------------------------
-
     df = one_hot_encode(df)
-
-    # --------------------------------------------------------
-    # Step 3: log1p Transformation
-    # --------------------------------------------------------
 
     df = apply_log1p(df)
 
     return df
-
-
-# ============================================================
-# SAVE OUTPUT TO MYSQL
-# ============================================================
 
 def save_to_database(df):
     """
@@ -635,11 +517,6 @@ def save_to_database(df):
 
         raise error
 
-
-# ============================================================
-# MAIN
-# ============================================================
-
 def main():
 
     print("\n")
@@ -652,40 +529,20 @@ def main():
 
     print("=" * 70)
 
-    # --------------------------------------------------------
-    # Step 1: Load input dataset FROM MYSQL
-    # --------------------------------------------------------
-
     original_df = load_data()
-
-    # --------------------------------------------------------
-    # Step 2: Apply transformations
-    # --------------------------------------------------------
 
     transformed_df = transform_data(
         original_df
     )
-
-    # --------------------------------------------------------
-    # Step 3: Validate final dataset
-    # --------------------------------------------------------
 
     validate_output(
         transformed_df,
         original_df
     )
 
-    # --------------------------------------------------------
-    # Step 4: Save transformed data to MySQL
-    # --------------------------------------------------------
-
     save_to_database(
         transformed_df
     )
-
-    # --------------------------------------------------------
-    # Final message
-    # --------------------------------------------------------
 
     print("\n")
     print("=" * 70)
@@ -715,11 +572,6 @@ def main():
         f"Output rows        : "
         f"{len(transformed_df):,}"
     )
-
-
-# ============================================================
-# RUN
-# ============================================================
 
 if __name__ == "__main__":
     main()
