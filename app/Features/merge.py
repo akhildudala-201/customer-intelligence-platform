@@ -5,11 +5,13 @@ import pandas as pd
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-FEATURE_MODULE_DIR = PROJECT_ROOT / "app" / "feature_engineering"
+FEATURE_MODULE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(FEATURE_MODULE_DIR))
 
+# pyrefly: ignore [missing-import]
 from build_churn_label import build_labels
+# pyrefly: ignore [missing-import]
 from build_features import (
     build_customer_base,
     build_fulfillment_features,

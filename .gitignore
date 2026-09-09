@@ -16,5 +16,6 @@ venv/
 # macOS
 .DS_Store
 
-# Windows
 Thumbs.db
+tests/__init__.py
+
