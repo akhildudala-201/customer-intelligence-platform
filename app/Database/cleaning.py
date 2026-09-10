@@ -27,7 +27,7 @@ def _coerce_numeric(df, columns):
     return df
 def _strip_strings(df):
     """Trim string values and treat empty strings as missing."""
-    str_cols = df.select_dtypes(include="object").columns
+    str_cols = df.select_dtypes(include=["object",'string']).columns
     for col in str_cols:
         df[col] = df[col].str.strip()
         df[col] = df[col].replace("", pd.NA)
