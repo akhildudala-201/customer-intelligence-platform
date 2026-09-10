@@ -15,8 +15,10 @@ for path in (str(PROJECT_ROOT), str(FEATURES_DIR)):
         sys.path.insert(0, path)
 # pyrefly: ignore [missing-import]
 try:
+    # pyrefly: ignore [missing-import]
     import app.Features.merge as merge
 except ModuleNotFoundError:
+    # pyrefly: ignore [missing-import]
     import merge
 
 
