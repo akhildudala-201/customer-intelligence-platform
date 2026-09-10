@@ -235,7 +235,9 @@ def test_clean_geolocation():
         "geolocation_lng": [78.0, 80.0, 200.0],
     })
     result = clean_dataframe("geolocation", df)
-    assert result.loc[0, "geolocation_lat"] == 17.0
-    assert result.loc[0, "geolocation_lng"] == 78.0
-    assert pd.isna(result.loc[1, "geolocation_lat"])
-    assert pd.isna(result.loc[2, "geolocation_lng"])
+    # Rows with invalid/out-of-range coordinates are dropped
+    assert len(result) == 1
+    assert result.iloc[0]["geolocation_zip_code_prefix"] == 100
+    assert result.iloc[0]["geolocation_lat"] == 17.0
+    assert result.iloc[0]["geolocation_lng"] == 78.0
+
