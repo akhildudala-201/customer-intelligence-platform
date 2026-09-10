@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from feature_engineering.encoding_transformation import (
+from app.feature_engineering.encoding_transformation import (
     frequency_encode,
     one_hot_encode,
     apply_log1p,
