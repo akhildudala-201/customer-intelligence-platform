@@ -52,12 +52,26 @@ except ModuleNotFoundError:
 warnings.filterwarnings("ignore")
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+# Optimal hyperparameters discovered by Optuna (40 trials x 5-fold CV on PR-AUC)
+DEFAULT_BEST_PARAMS = {
+    "num_leaves": 23,
+    "max_depth": 7,
+    "learning_rate": 0.085757,
+    "colsample_bytree": 0.807623,
+    "subsample": 0.731222,
+    "subsample_freq": 6,
+    "reg_alpha": 0.224557,
+    "reg_lambda": 5.671255,
+    "min_child_samples": 53,
+}
+
 CONFIG = {
     "TARGET_COLUMN": "churn_label",
     "ID_COLUMN": "customer_unique_id",
     "RANDOM_STATE": 42,
     "RESAMPLER": "weights",  # 'weights' (scale_pos_weight) or 'smote' or 'none'
     "POSITIVE_CLASS": None,  # None auto-detects minority class
+    "TUNE_HYPERPARAMETERS": False,  # False = instant 3-second run using DEFAULT_BEST_PARAMS; True = re-tune with Optuna
     "N_TRIALS": 40,
     "CV_FOLDS": 5,
     "N_ESTIMATORS": 2000,
@@ -70,6 +84,7 @@ CONFIG = {
     "OUTPUT_DIR": str(PROJECT_ROOT / "outputs" / "models") + "/",
     "TIMESTAMP": datetime.now().strftime("%Y%m%d_%H%M%S"),
 }
+
 
 os.makedirs(CONFIG["OUTPUT_DIR"], exist_ok=True)
 
@@ -416,8 +431,15 @@ def objective_function(trial: optuna.Trial, X_train: pd.DataFrame, y_train: pd.S
 
 
 def hyperparameter_tuning(X_train: pd.DataFrame, y_train: pd.Series) -> dict:
-    """Run Bayesian optimization across candidate hyperparameter space."""
-    banner("HYPERPARAMETER TUNING (PR-AUC)")
+    """Return optimal hyperparameters (using cached best_params or running Optuna search)."""
+    banner("HYPERPARAMETER CONFIGURATION")
+
+    if not CONFIG.get("TUNE_HYPERPARAMETERS", False):
+        log_message("Using pre-tuned optimal hyperparameters (set CONFIG['TUNE_HYPERPARAMETERS']=True to re-tune with Optuna)")
+        for k, v in DEFAULT_BEST_PARAMS.items():
+            log_message(f"   {k}: {v}")
+        return dict(DEFAULT_BEST_PARAMS)
+
     baseline = float(y_train.mean())
     log_message(f"Random-guess PR-AUC baseline = prevalence = {baseline:.4f}")
     log_message(f"{CONFIG['N_TRIALS']} trials x {CONFIG['CV_FOLDS']}-fold CV")
