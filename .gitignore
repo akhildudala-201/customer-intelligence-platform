@@ -3,6 +3,7 @@
 .vscode/
 .vs/
 *.iml
+pyrightconfig.json
 
 # Python
 __pycache__/
@@ -16,6 +17,5 @@ venv/
 # macOS
 .DS_Store
 
-Thumbs.db
-tests/__init__.py
-
+# Outputs
+outputs/

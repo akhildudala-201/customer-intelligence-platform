@@ -401,6 +401,14 @@ def test_build_product_features(monkeypatch):
         "order_count": [
             2,
             2
+        ],
+        "avg_product_weight_g": [
+            500.0,
+            250.0
+        ],
+        "freight_ratio": [
+            0.15,
+            0.20
         ]
     })
 
@@ -452,7 +460,9 @@ def test_build_product_features(monkeypatch):
         "unique_products",
         "unique_categories",
         "dominant_product_category",
-        "avg_items_per_order"
+        "avg_items_per_order",
+        "avg_product_weight_g",
+        "freight_ratio"
     ]
 
     # -----------------------------------------------------

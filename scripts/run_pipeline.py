@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DB_DIR = ROOT / "app" / "Database"
 FEATURES_DIR = ROOT / "app" / "Features"
+ML_DIR = ROOT / "app" / "ml"
 
 
 def get_python_executable() -> str:
@@ -35,6 +36,11 @@ def main() -> None:
         action="store_true",
         help="Skip the CSV-to-MySQL ingestion step if data is already loaded.",
     )
+    parser.add_argument(
+        "--train-model",
+        action="store_true",
+        help="Train the Logistic Regression churn model after building model-ready tables.",
+    )
     args = parser.parse_args()
 
     if not args.skip_ingest:
@@ -48,6 +54,9 @@ def main() -> None:
         "Selecting features and scaling",
         FEATURES_DIR / "feature_selection_and_scaling.py",
     )
+
+    if args.train_model:
+        run_step("Training Logistic Regression model", ML_DIR / "logistic_regression.py")
 
     print("\nPipeline complete.")
     print("Model-ready tables created in MySQL:")

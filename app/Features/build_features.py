@@ -385,7 +385,24 @@ def build_review_features(reference_date):
 
             COUNT(
                 r.review_id
-            ) AS review_count
+            ) AS review_count,
+
+            MAX(
+                CASE
+                    WHEN r.review_score <= 2
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS has_bad_review,
+
+            MAX(
+                CASE
+                    WHEN r.review_comment_message IS NOT NULL
+                         AND TRIM(r.review_comment_message) != ''
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS has_review_comment
 
         FROM customers c
 
@@ -436,7 +453,13 @@ def build_product_features(reference_date):
 
             COUNT(
                 DISTINCT o.order_id
-            ) AS order_count
+            ) AS order_count,
+
+            AVG(
+                p.product_weight_g
+            ) AS avg_product_weight_g,
+
+            SUM(oi.freight_value) / NULLIF(SUM(oi.price + oi.freight_value), 0) AS freight_ratio
 
         FROM customers c
 
@@ -552,6 +575,8 @@ def build_product_features(reference_date):
             "unique_categories",
             "dominant_product_category",
             "avg_items_per_order",
+            "avg_product_weight_g",
+            "freight_ratio",
         ]
     ]
 
@@ -568,7 +593,22 @@ def build_fulfillment_features(reference_date):
                     o.order_delivered_customer_date,
                     o.order_purchase_timestamp
                 )
-            ) AS avg_delivery_days
+            ) AS avg_delivery_days,
+
+            AVG(
+                DATEDIFF(
+                    o.order_delivered_customer_date,
+                    o.order_estimated_delivery_date
+                )
+            ) AS avg_delivery_delay_days,
+
+            MAX(
+                CASE
+                    WHEN o.order_delivered_customer_date > o.order_estimated_delivery_date
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS is_delayed_delivery
 
         FROM customers c
 
@@ -815,6 +855,12 @@ def clean_features(features):
         "unique_categories",
         "avg_items_per_order",
         "avg_delivery_days",
+        "avg_delivery_delay_days",
+        "is_delayed_delivery",
+        "has_bad_review",
+        "has_review_comment",
+        "avg_product_weight_g",
+        "freight_ratio",
         "tenure_days",
         "active_purchase_days",
     ]
@@ -825,6 +871,14 @@ def clean_features(features):
                 features[column],
                 errors="coerce"
             )
+
+    for binary_col in ("is_delayed_delivery", "has_bad_review", "has_review_comment"):
+        if binary_col in features.columns:
+            features[binary_col] = features[binary_col].fillna(0).astype(int)
+
+    for zero_fill_col in ("avg_delivery_delay_days", "avg_product_weight_g", "freight_ratio"):
+        if zero_fill_col in features.columns:
+            features[zero_fill_col] = features[zero_fill_col].fillna(0)
 
     count_columns = [
         "frequency",
@@ -922,6 +976,9 @@ def validate_features(features, customer_base):
         "dominant_product_category",
         "avg_items_per_order",
         "avg_delivery_days",
+        "avg_product_weight_g",
+        "freight_ratio",
+        "has_review_comment",
         "first_purchase_date",
         "last_purchase_date",
         "tenure_days",

@@ -26,8 +26,28 @@ DB_TABLE_NAME = "features_encoded"
 
 LABEL_COLUMN = "churn_label"
 NON_FEATURE_COLUMNS = [
-    "customer_unique_id", "churn_label", "censored",
-    "first_purchase_date", "last_purchase_date", "reference_date",
+    "customer_unique_id",
+    "churn_label",
+    "censored",
+    "first_purchase_date",
+    "last_purchase_date",
+    "reference_date",
+    # Target-leaking lifetime counts and recurrence features
+    "single_order_customer",
+    "frequency",
+    "delivered_orders",
+    "canceled_orders",
+    "shipped_orders",
+    "unavailable_orders",
+    "delivered_rate",
+    "active_purchase_days",
+    "total_items",
+    "avg_items_per_order",
+    "unique_products",
+    "unique_categories",
+    "recency_days",
+    "tenure_days",
+    "review_count",
 ]
 
 TIME_SPLIT_COLUMN = "first_purchase_date"
