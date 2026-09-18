@@ -61,11 +61,13 @@ def test_calculate_metrics_single_class_edge_case():
     y_pred = [0, 0, 0, 1]
     y_prob = [0.1, 0.2, 0.3, 0.6]
 
-    # Should not raise exception when only one class is present in true labels
-    metrics = calculate_metrics(y_true, y_pred, y_prob)
+    # Should cleanly capture UserWarning and not raise unhandled exception
+    with pytest.warns(UserWarning):
+        metrics = calculate_metrics(y_true, y_pred, y_prob)
     assert metrics["roc_auc"] is None
     assert metrics["pr_auc"] is None
     assert metrics["accuracy"] == 0.75
+
 
 
 def test_find_optimal_threshold():
