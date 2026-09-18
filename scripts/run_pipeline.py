@@ -39,7 +39,22 @@ def main() -> None:
     parser.add_argument(
         "--train-model",
         action="store_true",
+        help="Train the Logistic Regression churn model after building model-ready tables (alias for --train-logistic).",
+    )
+    parser.add_argument(
+        "--train-logistic",
+        action="store_true",
         help="Train the Logistic Regression churn model after building model-ready tables.",
+    )
+    parser.add_argument(
+        "--train-lightgbm",
+        action="store_true",
+        help="Train the LightGBM churn model after building model-ready tables.",
+    )
+    parser.add_argument(
+        "--train-all",
+        action="store_true",
+        help="Train both Logistic Regression and LightGBM models after building model-ready tables.",
     )
     args = parser.parse_args()
 
@@ -55,8 +70,11 @@ def main() -> None:
         FEATURES_DIR / "feature_selection_and_scaling.py",
     )
 
-    if args.train_model:
+    if args.train_all or args.train_logistic or args.train_model:
         run_step("Training Logistic Regression model", ML_DIR / "logistic_regression.py")
+
+    if args.train_all or args.train_lightgbm:
+        run_step("Training LightGBM model", ML_DIR / "train_lightgbm_model.py")
 
     print("\nPipeline complete.")
     print("Model-ready tables created in MySQL:")
