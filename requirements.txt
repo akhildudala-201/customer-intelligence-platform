@@ -1,7 +1,22 @@
+# Core Data Processing & Database
 numpy==2.5.3
 pandas==3.0.5
-scikit-learn==1.9.0
-PyYAML==6.0.3
 SQLAlchemy==2.0.52
 PyMySQL==1.2.0
 python-dotenv==1.2.3
+PyYAML==6.0.3
+
+# Machine Learning & Class Imbalance Handling
+scikit-learn==1.9.0
+lightgbm==4.7.0
+optuna==5.0.0
+joblib==1.6.0
+imbalanced-learn==0.14.2
+
+# Visualization & Reporting
+matplotlib==3.11.2
+seaborn==0.13.2
+
+# Testing & Quality Assurance
+pytest==9.1.1
+pytest-cov==7.1.0
