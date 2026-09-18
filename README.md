@@ -2,259 +2,209 @@
 
 A backend platform for customer intelligence — churn prediction, customer segmentation, and targeted marketing — built on the Olist Brazilian e-commerce dataset.
 
-This repo currently implements the **data engineering and feature engineering pipeline**: CSV → cleaned MySQL tables → engineered features → churn labels → encoded, scaled, train/val/test-split model-ready tables. The ML training, segmentation/campaign, and FastAPI layers are planned but not yet in this codebase (see [Current Status](#current-status)).
-
+This repository implements the end-to-end data pipeline and machine learning layer: CSV ingestion → cleaned MySQL tables → engineered behavioral features → churn labels → encoded & scaled model-ready splits → class imbalance handling → high-performance ML models (LightGBM & Logistic Regression) with automated experiment tracking.
 
 ---
 
 ## Project Overview
 
-Using the Olist E-Commerce dataset, the pipeline:
+Using the Olist E-Commerce dataset, the platform:
 
-- Cleans and loads 8 raw CSVs into MySQL
-- Engineers ~28 customer-level behavioral features (RFM, order behavior, payments, reviews, products, fulfillment, geography, time)
-- Derives a churn label from a configurable return-window rule
-- Encodes and transforms features (frequency encoding, one-hot encoding, log1p)
-- Selects/scales features and produces time-based `train` / `val` / `test` tables in MySQL
+- Cleans and loads 8 raw CSVs into relational MySQL tables.
+- Engineers 14 non-leaking, high-impact behavioral features (checkout freight burden, product weight, RFM monetary spend, review engagement, logistics delay, category frequencies).
+- Derives customer churn labels using a configurable return-window rule (`label_config.yaml`).
+- Encodes and scales features into time-split `model_ready_train`, `model_ready_val`, and `model_ready_test` tables.
+- Benchmarks 8 class imbalance strategies (cost-sensitive loss weighting vs. resampling) to handle the 30.26:1 churn skew.
+- Trains production-grade churn classifiers:
+  - **LightGBM**: Bayesian hyperparameter-tuned tree ensemble achieving **`0.9492 ROC-AUC`** and **`13.2x Lift`** on top 5% risk slice.
+  - **Logistic Regression**: High-precision baseline achieving **`0.8770 ROC-AUC`** and **`80.61% Balanced Accuracy`** with odds-ratio interpretability.
+- Automatically logs all training runs, thresholds, and confusion matrix metrics to centralized experiment trackers.
 
+---
 
+## Model Performance Benchmarks
+
+Evaluated on the unseen test set (10,337 customers, 5.82% minority base rate):
+
+| Model | ROC-AUC | PR-AUC (Avg Prec) | Operating Threshold | Precision | Recall | Balanced Acc | Lift over Random | Primary Use Case |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **LightGBM** | **`0.9492`** | **`0.7661`** | `Rate Mode (Top 5%)` | **`74.85%`** | **`64.29%`** | — | **`12.85x`** | **Automated Retention Targeting** |
+| **Logistic Regression** | **`0.8770`** | **`0.9892`** | `0.59 (Val-tuned)` | **`99.19%`** | **`70.53%`** | **`80.61%`** | — | **Auditable Strategic Insights** |
 
 ---
 
 ## Tech Stack
 
-**Implemented and in `requirements.txt`:**
-
-| Tool | Used for |
-|---|---|
-| Python 3.11+ | Runtime (tested on 3.12) |
-| Pandas / NumPy | Data cleaning & feature engineering |
-| SQLAlchemy + PyMySQL | MySQL connectivity |
-| scikit-learn | Feature selection (chi2) & scaling (RobustScaler) |
-| PyYAML | Churn-label configuration |
-| python-dotenv | Loading `.env` |
+| Component | Tool / Library | Usage |
+| :--- | :--- | :--- |
+| **Runtime** | Python 3.11+ | Execution environment |
+| **Data & Feature Engineering** | Pandas, NumPy, scikit-learn | Cleaning, aggregation, frequency encoding, RobustScaler |
+| **Database** | MySQL 8.x, SQLAlchemy, PyMySQL | Relational storage for raw, feature, and model-ready tables |
+| **Machine Learning** | LightGBM, scikit-learn | Gradient boosted trees and cost-sensitive logistic regression |
+| **Hyperparameter Tuning** | Optuna (TPE Sampler) | 5-Fold Stratified Bayesian optimization on PR-AUC |
+| **Data Drift & Monitoring** | Population Stability Index (PSI) | Tracking feature & score stability across Train/Val/Test |
+| **Model Persistence** | Joblib | Production bundle packaging (`.joblib` & `.json` metadata) |
+| **Testing** | Pytest | 164 unit and integration tests |
 
 ---
 
 ## Team
 
-| Module | Owner |
-|---|---|
-| Data Engineering | Yashaswi |
-| Feature Engineering | Lohit |
-| Machine Learning | Kalyan |
-| Segmentation & Campaigns | Kuushalie |
-| FastAPI & Integration | Rajeswari |
+| Module | Task | Owner |
+| :--- | :--- | :--- |
+| Data Engineering | Ingestion, Cleaning & MySQL Schema | Yashaswi |
+| Feature Engineering | RFM, Product, Review & Fulfillment Features | Lohit |
+| Machine Learning (Person 1) | Logistic Regression Modeling & Odds Ratios | Kalyan |
+| Machine Learning (Person 2) | LightGBM Modeling & Optuna Tuning | Team Member 2 |
+| Machine Learning (Person 3) | Class Imbalance Experiments & Handling | Lohith Narayana |
+| Evaluation & Thresholds (Person 4) | Metric Suites & Optimization Thresholds | Team Member 4 |
+| Probability Calibration (Person 5) | Reliability Curves & Calibration | Team Member 5 |
+| Segmentation & Campaigns | Customer Clustering & Marketing Slices | Kuushalie |
+| FastAPI & Integration | Serving APIs & Dashboard Integration | Rajeswari |
 
 ---
 
 ## Repository Structure
 
-This is the actual current layout (verified against the repo, not aspirational):
-
-```
+```text
 customer-intelligence-platform/
-├── .github/
-│   └── PULL_REQUEST_TEMPLATE.md
 ├── app/
 │   ├── Database/
-│   │   ├── cleaning.py      
-│   │   ├── database.py       
-│   │   └── ingest.py         
+│   │   ├── cleaning.py                   # Data cleaning rules and null handling
+│   │   ├── database.py                   # SQLAlchemy MySQL engine connection
+│   │   └── ingest.py                     # CSV to MySQL ingestion pipeline
 │   ├── Features/
-│   │   ├── build_features.py             
-│   │   ├── build_churn_label.py          
-│   │   ├── merge.py                      
-│   │   ├── encoding_transformation.py    
-│   │   └── feature_selection_and_scaling.py 
+│   │   ├── build_features.py             # Feature engineering (freight, weight, spend, reviews)
+│   │   ├── build_churn_label.py          # Churn label derivation from order timestamps
+│   │   ├── merge.py                      # Merges customer features with churn labels
+│   │   ├── encoding_transformation.py    # Frequency and categorical encoding
+│   │   └── feature_selection_and_scaling.py # Feature selection & RobustScaler splits
+│   ├── ml/
+│   │   ├── logistic_regression.py        # Cost-sensitive Logistic Regression & odds ratios
+│   │   ├── train_lightgbm_model.py       # Production LightGBM model, PSI drift & Optuna tuning
+│   │   ├── imbalance_experiments.py      # 8-strategy class imbalance benchmark suite
+│   │   ├── metrics.py                    # Evaluation metrics & threshold search functions
+│   │   └── experiment_logger.py          # Centralized CSV/Markdown experiment tracker
 │   └── config/
-│       └── label_config.yaml       # churn-label rules 
+│       └── label_config.yaml             # Configurable churn observation & return windows
 ├── data/
-│   ├── README.md             # dataset documentation (tables, joins, churn-label ideas)
-│   └── olist_*.csv           # 8 raw source CSVs
-├── docs/                    
-├── tests/                    
+│   ├── Schema.sql                        # DDL schema with foreign keys and indexes
+│   └── olist_*.csv                       # Source raw CSVs
+├── outputs/                              # Local model artifacts & reports (git-ignored)
+│   ├── models/                           # Serialized .joblib bundles, metadata .json, and plots
+│   └── reports/                          # experiment_log.csv, imbalance benchmarks
 ├── scripts/
-│   └── run_pipeline.py       # orchestrates the full pipeline end-to-end
+│   └── run_pipeline.py                   # Orchestrates end-to-end data & modeling pipeline
+├── tests/                                # 164 unit tests (database, features, ML models)
 ├── .env.example
 ├── .gitignore
-├── CONTRIBUTING.md
-├── Makefile                  
-└── requirements.txt
+├── requirements.txt
+└── README.md
 ```
-
----
-
-## Prerequisites
-
-- Python 3.11 or newer
-- MySQL 8.x or MariaDB 10.11+, installed and running locally (or reachable over the network)
-- Git
 
 ---
 
 ## Getting Started
 
-### 1. Clone the repository
-
+### 1. Clone the Repository
 ```bash
 git clone <repository-url>
 cd customer-intelligence-platform
 ```
 
-### 2. Create and activate a virtual environment
-
+### 2. Create and Activate Virtual Environment
 ```bash
 python -m venv .venv
+source .venv/bin/activate       # macOS / Linux
+# .venv\Scripts\activate        # Windows
 ```
 
-macOS/Linux:
-```bash
-source .venv/bin/activate
-```
-
-Windows:
-```bash
-.venv\Scripts\activate
-```
-
-### 3. Install dependencies
-
+### 3. Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Set up MySQL
-
-Create the database and apply the schema **before running ingestion** — this matters. If you skip this step, `pandas.to_sql` will silently auto-create tables for you with no primary keys, no foreign keys, and generic types (e.g. every ID column becomes `TEXT`), which is a materially weaker schema than the one below.
-
+### 4. Database Setup
+Create the MySQL database and load the schema:
 ```bash
 mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS olist CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 mysql -u root -p olist < data/Schema.sql
 ```
 
-> `data/Schema.sql` defines all foreign keys, indexes, and primary keys for the tables in `olist`.
-
-### 5. Configure environment variables
-
+### 5. Environment Variables
+Copy `.env.example` to `.env` and configure your database credentials:
 ```bash
 cp .env.example .env
 ```
-
-Then edit `.env` and fill in your real values — at minimum `DB_USER`, `DB_PASSWORD`, and `DATASET_DIR` (absolute path to this repo's `data/` folder on your machine). `database.py` reads `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` individually to build the connection — it does **not** read `DATABASE_URL` directly, so keep the two in sync manually if you use both.
-
-
-### 6. Run the pipeline
-
-Option A — run everything in one command from the repo root:
-
-```bash
-python scripts/run_pipeline.py
-```
-
-This runs, in order: ingest all CSVs (`--replace`) → build features → build churn labels → merge → encode/transform → select & scale/split. If your data is already ingested and you just want to re-run feature engineering:
-
-```bash
-python scripts/run_pipeline.py --skip-ingest
-```
-
-Option B — run each stage individually (useful while debugging one step):
-
-```bash
-python -m app.Database.ingest all --replace
-python app/Features/build_features.py
-python app/Features/build_churn_label.py
-python app/Features/merge.py
-python app/Features/encoding_transformation.py
-python app/Features/feature_selection_and_scaling.py
-```
-
-### Expected result
-
-A full run against the unmodified dataset produces these row counts — useful as a sanity check that your setup is correct:
-
-| Stage | Table | Rows |
-|---|---|---|
-| Ingest | `customers` | 99,441 |
-| Ingest | `orders` | 99,441 |
-| Ingest | `order_items` | 112,633 |
-| Ingest | `order_payments` | 103,886 |
-| Ingest | `order_reviews` | 100,000 |
-| Ingest | `products` | 32,950 |
-| Ingest | `sellers` | 3,095 |
-| Ingest | `geolocation` | 1,000,163 |
-| Features | `customer_features` | 96,096 |
-| Labels | `customer_churn_labels` | 96,095 |
-| Merge | `customer_features_with_labels` | 96,095 |
-| Encode | `features_encoded` | 96,095 |
-| Split | `model_ready_train` | 48,232 |
-| Split | `model_ready_val` | 10,335 |
-| Split | `model_ready_test` | 10,337 |
-
-The split step drops ~27,191 "censored" customers (not enough time elapsed since their last order to confidently label them churned/retained under the 180-day window in `label_config.yaml`) before splitting the rest 70/15/15 by first-purchase date.
-
-Ingestion is the slow step (the geolocation CSV alone is ~1M rows, processed in chunks); the feature/label/merge/encode/scale steps each complete in well under a minute on the full dataset.
-
+Ensure `DB_USER`, `DB_PASSWORD`, `DB_NAME=olist`, and `DATASET_DIR` are populated.
 
 ---
 
-## Development Workflow
+## Running the Pipeline
 
-1. Pull the latest changes from `main`
-2. Create a feature branch
-3. Implement your changes
-4. Test locally
-5. Commit your changes
-6. Push your branch
-7. Open a Pull Request
-8. Wait for code review before merging
+The pipeline script [`scripts/run_pipeline.py`](./scripts/run_pipeline.py) orchestrates the entire workflow:
 
-## Branch Naming
+### Option A: Build Database & Feature Tables Only
+```bash
+# Full run including raw CSV ingestion:
+python scripts/run_pipeline.py
 
-```
-feature/<feature-name>
-bugfix/<bug-name>
-docs/<document-name>
+# Skip CSV ingestion if raw tables already exist in MySQL:
+python scripts/run_pipeline.py --skip-ingest
 ```
 
-Examples: `feature/churn-model`, `feature/customer-api`, `bugfix/sqlite-join`
+### Option B: Build Tables and Train Models
+```bash
+# Build tables and train Logistic Regression:
+python scripts/run_pipeline.py --skip-ingest --train-logistic
 
-## Commit Message Convention
+# Build tables and train LightGBM:
+python scripts/run_pipeline.py --skip-ingest --train-lightgbm
 
+# Build tables and train BOTH models:
+python scripts/run_pipeline.py --skip-ingest --train-all
 ```
-feat: add churn prediction endpoint
-fix: resolve SQLite foreign key issue
-docs: update README
-refactor: simplify feature engineering
-test: add API unit tests
+
+### Option C: Run Standalone ML Modules Directly
+```bash
+# Run standalone Logistic Regression training:
+python app/ml/logistic_regression.py
+
+# Run standalone LightGBM training (fast mode ~3s):
+python app/ml/train_lightgbm_model.py
+
+# Run Class Imbalance 8-strategy benchmarks:
+python app/ml/imbalance_experiments.py
 ```
 
-Full contribution guidelines (PR checklist, coding standards, module ownership) are in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+---
+
+## Expected Table Outputs in MySQL
+
+A successful run creates the following validated tables:
+
+| Stage | Table | Description | Rows |
+| :--- | :--- | :--- | :---: |
+| Features | `customer_features` | Raw customer aggregations | 96,096 |
+| Labels | `customer_churn_labels` | Churn flags based on observation window | 96,095 |
+| Merge | `customer_features_with_labels` | Joined features and targets | 96,095 |
+| Encode | `features_encoded` | Frequency encoded & transformed features | 96,095 |
+| Split | `model_ready_train` | 70% temporal train set (14 features) | 48,232 |
+| Split | `model_ready_val` | 15% validation set for threshold tuning | 10,335 |
+| Split | `model_ready_test` | 15% unseen test set for final reporting | 10,337 |
 
 ---
 
 ## Testing
 
+Run the comprehensive test suite:
 ```bash
 pytest
 ```
-
-
----
-
-## Documentation
-
-- [`data/README.md`](./data/README.md) — dataset documentation: table shapes, join keys, and how the Olist data maps to our real membership data
-- `docs/` — reserved for additional project documentation 
-
----
-
-## Contributing
-
-Please read [`CONTRIBUTING.md`](./CONTRIBUTING.md) before submitting a Pull Request.
+*Current coverage: **164/164 tests passing** across feature engineering, database pipelines, class imbalance handling, Logistic Regression, and LightGBM model contracts.*
 
 ---
 
 ## License
 
-This repository is intended for internship training and internal learning purposes.
+This repository is intended for internship training and internal educational purposes.
