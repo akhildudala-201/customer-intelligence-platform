@@ -16,3 +16,6 @@ venv/
 
 # Windows
 Thumbs.db
+
+outputs/
+data/

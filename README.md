@@ -1,6 +1,6 @@
-# custome# Customer Intelligence Platform
+# Customer Intelligence Platform
 
-A backend platform for customer intelligence, churn prediction, customer segmentation, and targeted marketing built using Python, FastAPI, SQLite, and Machine Learning.
+A backend platform for customer intelligence, churn prediction, customer segmentation, and targeted marketing built using Python, FastAPI, SQLite/MySQL, and Machine Learning.
 
 ---
 
@@ -9,7 +9,6 @@ A backend platform for customer intelligence, churn prediction, customer segment
 This project analyzes customer purchasing behavior using the Olist E-Commerce dataset to:
 
 - Predict customer churn
-- 
 - Generate customer risk scores
 - Segment customers
 - Produce targeted marketing campaign lists
@@ -204,4 +203,4 @@ Please read the `CONTRIBUTING.md` file before submitting a Pull Request.
 
 ## License
 
-This repository is intended for internship training and internal learning purposes.r-intelligence-platform
+This repository is intended for internship training and internal learning purposes.
