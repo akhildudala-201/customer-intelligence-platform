@@ -1,6 +1,6 @@
 # Customer Intelligence Platform
 
-A backend platform for customer intelligence — churn prediction, customer segmentation, and targeted marketing — built on the Olist Brazilian e-commerce dataset.
+A production backend platform for customer intelligence — churn prediction, customer segmentation, and targeted retention marketing — built on the Olist Brazilian e-commerce dataset.
 
 This repository implements the end-to-end data pipeline and machine learning layer: CSV ingestion → cleaned MySQL tables → engineered behavioral features → churn labels → encoded & scaled model-ready splits → class imbalance handling → high-performance ML models (LightGBM & Logistic Regression) with automated experiment tracking.
 
@@ -18,6 +18,7 @@ Using the Olist E-Commerce dataset, the platform:
 - Trains production-grade churn classifiers:
   - **LightGBM**: Bayesian hyperparameter-tuned tree ensemble achieving **`0.9492 ROC-AUC`** and **`13.2x Lift`** on top 5% risk slice.
   - **Logistic Regression**: High-precision baseline achieving **`0.8770 ROC-AUC`** and **`80.61% Balanced Accuracy`** with odds-ratio interpretability.
+- Tracks data drift across temporal splits using Population Stability Index (PSI).
 - Automatically logs all training runs, thresholds, and confusion matrix metrics to centralized experiment trackers.
 
 ---
@@ -30,6 +31,76 @@ Evaluated on the unseen test set (10,337 customers, 5.82% minority base rate):
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
 | **LightGBM** | **`0.9492`** | **`0.7661`** | `Rate Mode (Top 5%)` | **`74.85%`** | **`64.29%`** | — | **`12.85x`** | **Automated Retention Targeting** |
 | **Logistic Regression** | **`0.8770`** | **`0.9892`** | `0.59 (Val-tuned)` | **`99.19%`** | **`70.53%`** | **`80.61%`** | — | **Auditable Strategic Insights** |
+
+---
+
+## Engineered Behavioral Features (14 Features)
+
+All features are engineered strictly from the observation window before the temporal split to eliminate target leakage:
+
+| # | Feature Name | Type | Description / Business Intuition |
+| :-: | :--- | :---: | :--- |
+| 1 | `monetary_value` | Continuous | Total customer spend in Brazilian Real (BRL) |
+| 2 | `avg_payment_installments` | Continuous | Average installment split per transaction (credit risk & purchasing behavior) |
+| 3 | `avg_review_score` | Continuous | Customer satisfaction rating (1.0 to 5.0 scale) |
+| 4 | `has_bad_review` | Binary (0/1) | Flag indicating customer left a 1-star or 2-star review |
+| 5 | `has_review_comment` | Binary (0/1) | Flag indicating customer wrote explicit text in their review (high-engagement / vocal customer) |
+| 6 | `avg_product_weight_g` | Continuous | Physical weight footprint of ordered items in grams (correlates with bulky logistics) |
+| 7 | `freight_ratio` | Continuous | Freight value divided by total payment (shipping cost burden relative to cart size) |
+| 8 | `avg_delivery_days` | Continuous | Transit duration from purchase date to carrier delivery date |
+| 9 | `avg_delivery_delay_days` | Continuous | Elapsed days between carrier delivery date and carrier estimated delivery date |
+| 10 | `is_delayed_delivery` | Binary (0/1) | Flag indicating delivery arrived past the estimated delivery date |
+| 11 | `dominant_product_category_frequency` | Continuous | Frequency encoding of the customer's primary product category |
+| 12 | `customer_city_state_frequency` | Continuous | Frequency encoding of customer geographic location (captures logistics density) |
+| 13 | `preferred_payment_type_debit_card` | Binary (0/1) | One-hot encoded payment preference: Debit Card |
+| 14 | `preferred_payment_type_not_defined` | Binary (0/1) | One-hot encoded payment preference: Not Defined / voucher fallback |
+
+---
+
+## Class Imbalance Handling & Strategy Benchmarks
+
+### 1. Imbalance Profile (Training Split)
+- **Total Training Samples**: 48,232 customers
+- **Retained Customers (Class 0 / Minority)**: 1,543 (3.20%)
+- **Churned Customers (Class 1 / Majority)**: 46,689 (96.80%)
+- **Imbalance Ratio**: **30.26 : 1**
+- **Theoretical 'Balanced' Weights**: Class 0 = `15.6293x`, Class 1 = `0.5165x` (effective penalty ratio: **30.26x** on minority errors).
+- **Core Implication**: A naive classifier achieves 96.8% accuracy simply by predicting every customer churns, resulting in **0.0% recall** on retained customers. Cost-sensitive loss weighting or threshold tuning is mandatory.
+
+### 2. Strategy Benchmarks — Logistic Regression
+Evaluated using validation-tuned decision thresholds on the validation set:
+
+| Strategy | Tuned Thresh | Balanced Acc | Retained Recall | Retained Prec | Churn Recall | ROC-AUC | PR-AUC |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Cost-Sensitive (15:1)** | **0.71** | **0.8088** | **88.5%** | 17.0% | 73.2% | 0.8758 | 0.9890 |
+| **Cost-Sensitive (45:1)** | 0.49 | 0.8086 | 90.2% | 16.4% | 71.5% | 0.8772 | 0.9892 |
+| **Inverse Frequency ('balanced')** | 0.59 | 0.8061 | 90.7% | 16.0% | 70.5% | 0.8770 | 0.9892 |
+| **Undersampling (1:1)** | 0.59 | 0.8065 | 90.7% | 16.0% | 70.6% | 0.8771 | 0.9892 |
+| **Undersampling (3:1)** | 0.78 | 0.8038 | 87.7% | 16.8% | 73.0% | 0.8729 | 0.9888 |
+| **Oversampling (1:1)** | 0.59 | 0.8043 | 90.5% | 15.9% | 70.3% | 0.8765 | 0.9891 |
+| **Cost-Sensitive (5:1)** | 0.87 | 0.7967 | 86.1% | 16.6% | 73.3% | 0.8706 | 0.9884 |
+| **Unweighted Baseline** | 0.97 | 0.7800 | 84.2% | 15.6% | 71.8% | 0.8575 | 0.9869 |
+
+### 3. Strategy Benchmarks — LightGBM
+Evaluated across cost-sensitive weights and resampling techniques:
+
+| Strategy | Tuned Thresh | Balanced Acc | Retained Recall | Retained Prec | Churn Recall | ROC-AUC | PR-AUC |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Unweighted Baseline + Thresh Tuning** | **0.97** | **0.8822** | **88.0%** | **31.9%** | **88.4%** | **0.9483** | **0.9956** |
+| **Cost-Sensitive (5:1)** | 0.94 | 0.8691 | 92.0% | 23.8% | 81.8% | 0.9494 | 0.9959 |
+| **Cost-Sensitive (15:1)** | 0.87 | 0.8691 | 91.9% | 23.9% | 82.0% | 0.9466 | 0.9956 |
+| **Inverse Frequency ('balanced')** | 0.78 | 0.8690 | 91.0% | 24.6% | 82.8% | 0.9445 | 0.9955 |
+| **Cost-Sensitive (45:1)** | 0.77 | 0.8661 | 92.7% | 22.8% | 80.5% | 0.9431 | 0.9953 |
+| **Undersampling (3:1)** | 0.81 | 0.8669 | 88.7% | 26.4% | 84.7% | 0.9421 | 0.9955 |
+| **Undersampling (1:1)** | 0.61 | 0.8593 | 90.7% | 22.9% | 81.2% | 0.9373 | 0.9951 |
+| **Oversampling (1:1)** | 0.85 | 0.8568 | 93.5% | 20.7% | 77.8% | 0.9442 | 0.9954 |
+
+### 4. Key Takeaways
+1. **Cost-Sensitive Loss Weighting > Resampling**:
+   - Random undersampling discards up to **95% of the majority class data**, severely destroying sample variance and boundary fidelity.
+   - Oversampling duplicates minority records, causing tree ensembles to memorize specific repeated samples.
+   - Cost-sensitive loss weighting retains 100% of data while penalizing minority class misclassifications appropriately.
+2. **Threshold Tuning is Crucial**: Post-hoc probability threshold search on validation PR curves yields dramatic improvements in balanced accuracy and minority recall without altering the underlying probability geometry.
 
 ---
 
@@ -96,6 +167,16 @@ customer-intelligence-platform/
 ├── scripts/
 │   └── run_pipeline.py                   # Orchestrates end-to-end data & modeling pipeline
 ├── tests/                                # 164 unit tests (database, features, ML models)
+│   ├── test_build_churn_label.py
+│   ├── test_build_features.py
+│   ├── test_cleaning.py
+│   ├── test_encoding_transformation.py
+│   ├── test_experiment_logger.py
+│   ├── test_feature_selection_and_scaling.py
+│   ├── test_imbalance_experiments.py
+│   ├── test_lightgbm_model.py            # 16 LightGBM contracts & PSI drift tests
+│   ├── test_logistic_regression.py
+│   └── test_merge.py
 ├── .env.example
 ├── .gitignore
 ├── requirements.txt
@@ -114,7 +195,7 @@ cd customer-intelligence-platform
 
 ### 2. Create and Activate Virtual Environment
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate       # macOS / Linux
 # .venv\Scripts\activate        # Windows
 ```
@@ -147,61 +228,61 @@ The pipeline script [`scripts/run_pipeline.py`](./scripts/run_pipeline.py) orche
 ### Option A: Build Database & Feature Tables Only
 ```bash
 # Full run including raw CSV ingestion:
-python scripts/run_pipeline.py
+python3 scripts/run_pipeline.py
 
 # Skip CSV ingestion if raw tables already exist in MySQL:
-python scripts/run_pipeline.py --skip-ingest
+python3 scripts/run_pipeline.py --skip-ingest
 ```
 
 ### Option B: Build Tables and Train Models
 ```bash
 # Build tables and train Logistic Regression:
-python scripts/run_pipeline.py --skip-ingest --train-logistic
+python3 scripts/run_pipeline.py --skip-ingest --train-logistic
 
 # Build tables and train LightGBM:
-python scripts/run_pipeline.py --skip-ingest --train-lightgbm
+python3 scripts/run_pipeline.py --skip-ingest --train-lightgbm
 
 # Build tables and train BOTH models:
-python scripts/run_pipeline.py --skip-ingest --train-all
+python3 scripts/run_pipeline.py --skip-ingest --train-all
 ```
 
 ### Option C: Run Standalone ML Modules Directly
 ```bash
 # Run standalone Logistic Regression training:
-python app/ml/logistic_regression.py
+python3 app/ml/logistic_regression.py
 
 # Run standalone LightGBM training (fast mode ~3s):
-python app/ml/train_lightgbm_model.py
+python3 app/ml/train_lightgbm_model.py
 
 # Run Class Imbalance 8-strategy benchmarks:
-python app/ml/imbalance_experiments.py
+python3 app/ml/imbalance_experiments.py
 ```
 
 ---
 
 ## Expected Table Outputs in MySQL
 
-A successful run creates the following validated tables:
+A successful pipeline run creates the following validated relational tables:
 
-| Stage | Table | Description | Rows |
-| :--- | :--- | :--- | :---: |
-| Features | `customer_features` | Raw customer aggregations | 96,096 |
-| Labels | `customer_churn_labels` | Churn flags based on observation window | 96,095 |
-| Merge | `customer_features_with_labels` | Joined features and targets | 96,095 |
-| Encode | `features_encoded` | Frequency encoded & transformed features | 96,095 |
-| Split | `model_ready_train` | 70% temporal train set (14 features) | 48,232 |
-| Split | `model_ready_val` | 15% validation set for threshold tuning | 10,335 |
-| Split | `model_ready_test` | 15% unseen test set for final reporting | 10,337 |
+| Stage | Table | Description | Rows | Columns |
+| :--- | :--- | :--- | :---: | :---: |
+| Features | `customer_features` | Raw customer behavioral aggregations | 96,096 | 28 |
+| Labels | `customer_churn_labels` | Churn flags derived from observation window | 96,095 | 5 |
+| Merge | `customer_features_with_labels` | Joined features and targets | 96,095 | 32 |
+| Encode | `features_encoded` | Frequency encoded & transformed features | 96,095 | 32 |
+| Split | `model_ready_train` | 70% temporal train set (14 features + label + id) | 48,232 | 16 |
+| Split | `model_ready_val` | 15% validation set for threshold tuning | 10,335 | 16 |
+| Split | `model_ready_test` | 15% unseen test set for final reporting | 10,337 | 16 |
 
 ---
 
 ## Testing
 
-Run the comprehensive test suite:
+Run the full automated test suite:
 ```bash
 pytest
 ```
-*Current coverage: **164/164 tests passing** across feature engineering, database pipelines, class imbalance handling, Logistic Regression, and LightGBM model contracts.*
+*Current test suite: **164/164 tests passing** with 0 warnings across feature engineering, database pipelines, class imbalance handling, Logistic Regression, and LightGBM model contracts.*
 
 ---
 
