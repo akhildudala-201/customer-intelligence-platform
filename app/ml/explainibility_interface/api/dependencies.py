@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.ml.explainibility_interface.inference.predict import ChurnPredictor
+from app.ml.explainability_inference.inference.predict import ChurnPredictor
 
 _predictor: ChurnPredictor | None = None
 
