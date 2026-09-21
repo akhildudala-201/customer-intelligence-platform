@@ -228,12 +228,17 @@ Copy `.env.example` to `.env` and configure your database credentials:
 cp .env.example .env
 ```
 Ensure `DB_USER`, `DB_PASSWORD`, `DB_NAME`, and `DATASET_DIR` are populated.
-For model serving, set:
+After the training pipeline finishes calibration, set the model artifact path
+and version in the root `.env` file:
 
 ```env
 MODEL_PATH=outputs/models/lgb_churn_model_calibrated.joblib
 MODEL_VERSION=v1
 ```
+
+`MODEL_PATH` may be relative to the repository root. Use the exact artifact
+created by calibration if its filename differs. `MODEL_VERSION` is the label
+stored with each prediction record.
 
 ---
 
@@ -255,16 +260,13 @@ The pipeline script [`scripts/run_pipeline.py`](./scripts/run_pipeline.py) orche
 
 This command builds the feature tables, trains both models, runs imbalance
 experiments, performs threshold analysis and model comparison, calibrates
-LightGBM, and runs
-`app.ml.explainibility_inference.inference.generate_predictions_table` to
-refresh the `churn_predictions` table:
+LightGBM, then stops after calibration:
 
 ```bash
 .venv/bin/python scripts/run_pipeline.py --skip-ingest --train-all
 ```
 
-> **Warning:** the final step replaces the full `churn_predictions` table.
-> Run this command only when a complete prediction refresh is intended.
+The prediction-table refresh is a separate command documented in step 5.
 
 ### 3. Run only the ML pipeline
 
@@ -372,15 +374,24 @@ customers, and refreshes the `churn_predictions` table:
 .venv/bin/python -m app.ml.explainibility_inference.inference.generate_predictions_table
 ```
 
+Run this command after calibration and after confirming that `MODEL_PATH` and
+`MODEL_VERSION` are set in `.env`:
+
+```bash
+# .env
+MODEL_PATH=outputs/models/lgb_churn_model_calibrated.joblib
+MODEL_VERSION=v1
+
+# from the repository root
+.venv/bin/python -m app.ml.explainibility_inference.inference.generate_predictions_table
+```
+
 This job reads every eligible customer from `features_encoded`, generates
 churn probabilities, SHAP values, and reason codes, and replaces the
 `churn_predictions` table.
 
-The same job is run automatically as the final step of:
-
-```bash
-.venv/bin/python scripts/run_pipeline.py --skip-ingest --train-all
-```
+The prediction-table job is intentionally not run by `run_pipeline.py`.
+Run it separately when a full `churn_predictions` refresh is intended.
 
 ---
 

@@ -62,7 +62,7 @@ def main() -> None:
         action="store_true",
         help="Run the complete ML pipeline after building model-ready tables: "
              "training, imbalance experiments, threshold analysis, model "
-             "comparison, calibration, and churn_predictions refresh.",
+             "comparison, and calibration.",
     )
     args = parser.parse_args()
 
@@ -83,12 +83,6 @@ def main() -> None:
             "Running complete ML training and calibration pipeline",
             ML_DIR / "run_all.py",
         )
-        run_step(
-            "Refreshing churn predictions table",
-            ML_DIR / "explainibility_inference"
-            / "inference"
-            / "generate_predictions_table.py",
-        )
     else:
         if args.train_logistic:
             run_step("Training Logistic Regression model", ML_DIR / "logistic_regression.py")
@@ -101,8 +95,6 @@ def main() -> None:
     print("- model_ready_train")
     print("- model_ready_val")
     print("- model_ready_test")
-    if args.train_all:
-        print("- churn_predictions (refreshed by generate_predictions_table.py)")
 
 
 if __name__ == "__main__":
