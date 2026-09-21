@@ -1,0 +1,389 @@
+"""
+Threshold analysis: Logistic Regression vs LightGBM (churn classification).
+FULLY SELF-CONTAINED -- no separate loader module needed.
+
+Loads your ALREADY-TRAINED artifacts -- no training happens in this script.
+
+Same fix as model_comparison.py: train_lightgbm_model.py auto-selects the
+MINORITY label as its positive class. On this Olist dataset (mostly one-time
+buyers, so churn_label=1 is the MAJORITY class), that minority label is very
+likely 0 -- meaning the raw artifact's predict_proba(X)[:, 1] returns
+P(retained), not P(churned). LoadedLightGBMModel inverts this automatically
+so every threshold in this sweep is interpreted against P(churn_label == 1),
+the same target Logistic Regression predicts.
+
+Sweeps a grid of decision thresholds on the validation set for each model,
+computes precision/recall/F1/balanced-accuracy at every threshold, plots the
+curves side by side, and reports each model's optimal threshold per metric.
+
+Usage:
+    # Defaults now resolve relative to the project root and auto-detect the
+    # newest LightGBM artifact -- so this works with no arguments at all:
+    python threshold_analysis.py
+
+    # Or override explicitly:
+    python threshold_analysis.py \
+        --logreg-path outputs/models/churn_logistic_regression.joblib \
+        --lgbm-path outputs/models/lgb_churn_model_20260917_174659.joblib \
+        --lgbm-metadata outputs/models/metadata_20260917_174659.json
+"""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import joblib
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2] if len(Path(__file__).resolve().parents) > 2 else Path(__file__).resolve().parent
+APP_ROOT = Path(__file__).resolve().parent
+
+for candidate in (str(PROJECT_ROOT), str(APP_ROOT)):
+    if candidate not in sys.path:
+        sys.path.insert(0, candidate)
+
+try:
+    from app.ml.metrics import calculate_metrics, find_optimal_threshold
+except ModuleNotFoundError:
+    from ml.metrics import calculate_metrics, find_optimal_threshold
+
+try:
+    from app.ml.logistic_regression import ChurnLogisticRegression, load_model_ready_data
+except ModuleNotFoundError:
+    from ml.logistic_regression import ChurnLogisticRegression, load_model_ready_data
+
+
+SWEEP_METRICS = ["precision", "recall", "f1", "balanced_accuracy"]
+TUNE_METRICS = ["f1", "balanced_accuracy", "precision", "recall"]
+
+# The business target both models must agree on: churn_label == CHURN_TARGET_VALUE
+CHURN_TARGET_VALUE = 1
+
+
+# ---------------------------------------------------------------------------
+# LightGBM artifact adapter (same probability-orientation fix as model_comparison.py)
+# ---------------------------------------------------------------------------
+
+class LoadedLightGBMModel:
+    """Wraps the artifact dict produced by train_lightgbm_model.py's save_model().
+    Always returns predict_proba() oriented as P(churn_label == CHURN_TARGET_VALUE)."""
+
+    def __init__(self, artifact: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None):
+        self.raw_model = artifact["model"]
+        self.feature_names_: List[str] = list(
+            artifact.get("feature_cols")
+            or (metadata or {}).get("feature_cols")
+            or []
+        )
+        self.source_positive_class = artifact.get(
+            "positive_class", (metadata or {}).get("positive_class", CHURN_TARGET_VALUE)
+        )
+        self.invert_proba = (self.source_positive_class != CHURN_TARGET_VALUE)
+        if self.invert_proba:
+            print(
+                f"  NOTE: LightGBM artifact was trained with positive_class="
+                f"{self.source_positive_class} (auto-selected minority label), not "
+                f"{CHURN_TARGET_VALUE}. Inverting probabilities so predict_proba() "
+                f"returns P(churn_label == {CHURN_TARGET_VALUE}), matching Logistic Regression."
+            )
+
+        self.threshold: float = 0.5
+        self.metrics_: Dict[str, Any] = {}
+        self.is_fitted_ = True
+
+        op = artifact.get("operating_point") or (metadata or {}).get("operating_point")
+        if op and op.get("mode") == "score":
+            t = float(op["value"])
+            self.threshold = (1.0 - t) if self.invert_proba else t
+
+    def _align_columns(self, X: pd.DataFrame) -> pd.DataFrame:
+        if self.feature_names_:
+            missing = [c for c in self.feature_names_ if c not in X.columns]
+            if missing:
+                raise ValueError(f"LightGBM artifact expects columns not present in X: {missing}")
+            return X[self.feature_names_]
+        return X
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        X_aligned = self._align_columns(X) if isinstance(X, pd.DataFrame) else X
+        raw_proba = self.raw_model.predict_proba(X_aligned)[:, 1]
+        return (1.0 - raw_proba) if self.invert_proba else raw_proba
+
+    def predict(self, X: pd.DataFrame, threshold: Optional[float] = None) -> np.ndarray:
+        t = self.threshold if threshold is None else threshold
+        return (self.predict_proba(X) >= t).astype(int)
+
+    def tune_threshold(self, X_val, y_val, metric: str = "f1", thresholds=None) -> Tuple[float, float]:
+        probs = self.predict_proba(X_val)
+        best_t, best_score = find_optimal_threshold(y_val, probs, metric=metric, thresholds=thresholds)
+        self.threshold = best_t
+        return best_t, best_score
+
+    def evaluate(self, X, y, threshold: Optional[float] = None) -> Dict[str, Any]:
+        t = self.threshold if threshold is None else threshold
+        probs = self.predict_proba(X)
+        preds = (probs >= t).astype(int)
+        metrics = calculate_metrics(y_true=y, y_pred=preds, y_prob=probs, threshold=t)
+        self.metrics_ = metrics
+        return metrics
+
+
+def load_logreg_model(path: Path) -> ChurnLogisticRegression:
+    """Load a trained ChurnLogisticRegression artifact. Does NOT train."""
+    print(f"Loading Logistic Regression artifact: {path}")
+    return ChurnLogisticRegression.load(path)
+
+
+def load_lightgbm_model(path: Path, metadata_path: Optional[Path] = None) -> LoadedLightGBMModel:
+    """Load a trained LightGBM artifact. Does NOT train."""
+    print(f"Loading LightGBM artifact: {path}")
+    artifact = joblib.load(path)
+
+    metadata = None
+    if metadata_path and Path(metadata_path).exists():
+        print(f"Loading LightGBM metadata: {metadata_path}")
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
+
+    return LoadedLightGBMModel(artifact, metadata)
+
+
+def find_latest_lightgbm_artifact(models_dir: Path) -> Path:
+    """Find the newest lgb_churn_model_<timestamp>.joblib training artifact.
+
+    Excludes any '*_calibrated.joblib' files (those are calibration.py's
+    output, a different schema) so this never picks up the wrong artifact.
+    """
+    candidates = sorted(
+        p for p in models_dir.glob("lgb_churn_model_*.joblib")
+        if "_calibrated" not in p.stem
+    )
+    if not candidates:
+        raise FileNotFoundError(
+            f"No lgb_churn_model_*.joblib found in {models_dir}. "
+            f"Run train_lightgbm_model.py first to produce one."
+        )
+    return candidates[-1]
+
+
+def guess_metadata_path(lgbm_path: Path, models_dir: Path) -> Optional[Path]:
+    """Derive the matching metadata_<timestamp>.json path from a LightGBM artifact path."""
+    ts = lgbm_path.stem.replace("lgb_churn_model_", "")
+    guess = models_dir / f"metadata_{ts}.json"
+    return guess if guess.exists() else None
+
+
+def load_val_test_data():
+    """Loads the same val/test splits/features both models were originally trained on."""
+    _, _, X_val, y_val, X_test, y_test = load_model_ready_data()
+    return X_val, y_val, X_test, y_test
+
+
+# ---------------------------------------------------------------------------
+# Threshold analysis logic
+# ---------------------------------------------------------------------------
+
+def threshold_sweep(model, X, y, thresholds=None) -> pd.DataFrame:
+    """Compute precision/recall/F1/balanced-accuracy across a grid of thresholds."""
+    if thresholds is None:
+        thresholds = np.linspace(0.01, 0.99, 99)
+    probs = model.predict_proba(X)
+    rows = []
+    for t in thresholds:
+        preds = (probs >= t).astype(int)
+        m = calculate_metrics(y_true=y, y_pred=preds, y_prob=probs, threshold=t)
+        rows.append({
+            "threshold": t,
+            "precision": m["precision"],
+            "recall": m["recall"],
+            "f1": m["f1"],
+            "balanced_accuracy": m["balanced_accuracy"],
+        })
+    return pd.DataFrame(rows)
+
+
+def best_threshold_per_metric(model, X, y) -> pd.DataFrame:
+    """For each metric in TUNE_METRICS, find the threshold that maximizes it."""
+    probs = model.predict_proba(X)
+    rows = []
+    for metric in TUNE_METRICS:
+        best_t, best_score = find_optimal_threshold(y, probs, metric=metric)
+        rows.append({"metric": metric, "best_threshold": best_t, "best_score": best_score})
+    return pd.DataFrame(rows)
+
+
+def compare_best_thresholds(logreg_best: pd.DataFrame, lgbm_best: pd.DataFrame) -> pd.DataFrame:
+    """Merge both models' best-threshold-per-metric tables into one side-by-side view.
+
+    For each metric, shows each model's own optimal threshold and the score it
+    reaches there, plus which model reaches the higher score. Note: the two
+    thresholds are usually different numbers (each model's own optimum) -- this
+    tells you the best each model CAN do on that metric, not what happens if you
+    used one shared threshold for both."""
+    merged = logreg_best.merge(
+        lgbm_best, on="metric", suffixes=("_logreg", "_lgbm")
+    )
+    merged["better"] = np.where(
+        merged["best_score_lgbm"] > merged["best_score_logreg"], "LightGBM",
+        np.where(merged["best_score_lgbm"] < merged["best_score_logreg"], "Logistic Regression", "tie")
+    )
+    merged["score_gap"] = (merged["best_score_lgbm"] - merged["best_score_logreg"]).round(4)
+    return merged[[
+        "metric",
+        "best_threshold_logreg", "best_score_logreg",
+        "best_threshold_lgbm", "best_score_lgbm",
+        "score_gap", "better",
+    ]]
+
+
+def plot_threshold_sweep(sweep_logreg: pd.DataFrame, sweep_lgbm: pd.DataFrame, out_path: Path) -> None:
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    metric_labels = [
+        ("precision", "Precision"),
+        ("recall", "Recall"),
+        ("f1", "F1-score"),
+        ("balanced_accuracy", "Balanced Accuracy"),
+    ]
+    for ax, (col, label) in zip(axes.flat, metric_labels):
+        ax.plot(sweep_logreg["threshold"], sweep_logreg[col], label="Logistic Regression", linewidth=2)
+        ax.plot(sweep_lgbm["threshold"], sweep_lgbm[col], label="LightGBM", linewidth=2)
+        ax.set_xlabel("Decision threshold")
+        ax.set_ylabel(label)
+        ax.set_title(f"{label} vs. Threshold (validation set)")
+        ax.legend()
+        ax.grid(alpha=0.3)
+    plt.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=120)
+    plt.close()
+    print(f"Saved threshold sweep plot to: {out_path}")
+
+
+def plot_precision_recall_tradeoff(sweep_logreg: pd.DataFrame, sweep_lgbm: pd.DataFrame, out_path: Path) -> None:
+    """Precision vs. recall as threshold varies, for both models on one chart."""
+    fig, ax = plt.subplots(figsize=(7, 6))
+    ax.plot(sweep_logreg["recall"], sweep_logreg["precision"], label="Logistic Regression", linewidth=2)
+    ax.plot(sweep_lgbm["recall"], sweep_lgbm["precision"], label="LightGBM", linewidth=2)
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.set_title("Precision-Recall Trade-off (validation set)")
+    ax.legend()
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=120)
+    plt.close()
+    print(f"Saved precision-recall trade-off plot to: {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="Threshold analysis for pre-trained Logistic Regression and LightGBM.")
+    parser.add_argument(
+        "--logreg-path",
+        default=str(PROJECT_ROOT / "outputs" / "models" / "churn_logistic_regression.joblib"),
+        help="Path to the trained ChurnLogisticRegression .joblib artifact.",
+    )
+    parser.add_argument(
+        "--lgbm-path",
+        default=None,
+        help="Path to the trained LightGBM .joblib artifact. "
+             "If omitted, auto-detects the newest lgb_churn_model_*.joblib in outputs/models/.",
+    )
+    parser.add_argument(
+        "--lgbm-metadata",
+        default=None,
+        help="Optional path to the matching metadata_<timestamp>.json. "
+             "If omitted, auto-derived from --lgbm-path (or its auto-detected value).",
+    )
+    parser.add_argument(
+        "--eval-split", default="val", choices=["val", "test"],
+        help="Which split to run the threshold sweep on. Use 'val' to choose a threshold; "
+             "'test' only to inspect behavior on held-out data (do not tune on test).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=str(PROJECT_ROOT / "outputs" / "reports"),
+        help="Directory to write sweep CSVs and plots.",
+    )
+    args = parser.parse_args()
+
+    models_dir = PROJECT_ROOT / "outputs" / "models"
+
+    # Auto-detect the newest LightGBM training artifact if not explicitly given.
+    if args.lgbm_path is None:
+        latest = find_latest_lightgbm_artifact(models_dir)
+        args.lgbm_path = str(latest)
+        print(f"No --lgbm-path given; using latest: {args.lgbm_path}")
+
+    # Auto-derive the matching metadata file if not explicitly given.
+    if args.lgbm_metadata is None:
+        guessed = guess_metadata_path(Path(args.lgbm_path), models_dir)
+        args.lgbm_metadata = str(guessed) if guessed else None
+
+    print("Loading val/test data (same splits/features both models were trained on)...")
+    X_val, y_val, X_test, y_test = load_val_test_data()
+
+    logreg = load_logreg_model(Path(args.logreg_path))
+    lgbm = load_lightgbm_model(Path(args.lgbm_path), Path(args.lgbm_metadata) if args.lgbm_metadata else None)
+
+    if args.eval_split == "val":
+        X_eval, y_eval = X_val, y_val
+    else:
+        X_eval, y_eval = X_test, y_test
+
+    print(f"  {args.eval_split} churn rate (label={CHURN_TARGET_VALUE}): {y_eval.mean():.2%}")
+
+    # Both models now predict the SAME target (churn_label == 1) -- no label remapping.
+    print(f"\nSweeping thresholds on the {args.eval_split} set...")
+    sweep_logreg = threshold_sweep(logreg, X_eval, y_eval)
+    sweep_lgbm = threshold_sweep(lgbm, X_eval, y_eval)
+
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    sweep_logreg.to_csv(out_dir / f"threshold_sweep_LogisticRegression_{args.eval_split}.csv", index=False)
+    sweep_lgbm.to_csv(out_dir / f"threshold_sweep_LightGBM_{args.eval_split}.csv", index=False)
+    print(f"Saved raw sweep tables to: {out_dir}")
+
+    plot_threshold_sweep(sweep_logreg, sweep_lgbm, out_dir / f"threshold_sweep_{args.eval_split}.png")
+    plot_precision_recall_tradeoff(sweep_logreg, sweep_lgbm, out_dir / f"precision_recall_tradeoff_{args.eval_split}.png")
+
+    print("\n" + "=" * 60)
+    print(f"LOGISTIC REGRESSION — best threshold per metric ({args.eval_split} set)")
+    print("=" * 60)
+    logreg_best = best_threshold_per_metric(logreg, X_eval, y_eval)
+    print(logreg_best.to_string(index=False))
+
+    print("\n" + "=" * 60)
+    print(f"LIGHTGBM — best threshold per metric ({args.eval_split} set)")
+    print("=" * 60)
+    lgbm_best = best_threshold_per_metric(lgbm, X_eval, y_eval)
+    print(lgbm_best.to_string(index=False))
+
+    logreg_best.to_csv(out_dir / f"best_thresholds_LogisticRegression_{args.eval_split}.csv", index=False)
+    lgbm_best.to_csv(out_dir / f"best_thresholds_LightGBM_{args.eval_split}.csv", index=False)
+
+    print("\n" + "=" * 60)
+    print(f"BEST-THRESHOLD COMPARISON ({args.eval_split} set)")
+    print("=" * 60)
+    threshold_comparison = compare_best_thresholds(logreg_best, lgbm_best)
+    print(threshold_comparison.to_string(index=False))
+    threshold_comparison_path = out_dir / f"best_threshold_comparison_{args.eval_split}.csv"
+    threshold_comparison.to_csv(threshold_comparison_path, index=False)
+    print(f"\nSaved best-threshold comparison to: {threshold_comparison_path}")
+
+    return sweep_logreg, sweep_lgbm, logreg_best, lgbm_best, threshold_comparison
+
+
+if __name__ == "__main__":
+    main()

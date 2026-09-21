@@ -2,7 +2,7 @@
 
 A production backend platform for customer intelligence — churn prediction, customer segmentation, and targeted retention marketing — built on the Olist Brazilian e-commerce dataset.
 
-This repository implements the end-to-end data pipeline and machine learning layer: CSV ingestion → cleaned MySQL tables → engineered behavioral features → churn labels → encoded & scaled model-ready splits → class imbalance handling → high-performance ML models (LightGBM & Logistic Regression) with automated experiment tracking.
+This repository implements the end-to-end data pipeline and machine learning layer: CSV ingestion → cleaned MySQL tables → engineered behavioral features → churn labels → encoded & scaled model-ready splits → class imbalance handling → LightGBM and Logistic Regression → calibration → SHAP explainability → customer-level predictions for segmentation.
 
 ---
 
@@ -11,7 +11,7 @@ This repository implements the end-to-end data pipeline and machine learning lay
 Using the Olist E-Commerce dataset, the platform:
 
 - Cleans and loads 8 raw CSVs into relational MySQL tables.
-- Engineers 14 non-leaking, high-impact behavioral features (checkout freight burden, product weight, RFM monetary spend, review engagement, logistics delay, category frequencies).
+- Engineers 15 non-leaking, high-impact behavioral features (checkout freight burden, product weight, RFM monetary spend, review engagement, logistics delay, category frequencies, and payment preferences).
 - Derives customer churn labels using a configurable return-window rule (`label_config.yaml`).
 - Encodes and scales features into time-split `model_ready_train`, `model_ready_val`, and `model_ready_test` tables.
 - Benchmarks 8 class imbalance strategies (cost-sensitive loss weighting vs. resampling) to handle the 30.26:1 churn skew.
@@ -34,7 +34,7 @@ Evaluated on the unseen test set (10,337 customers, 5.82% minority base rate):
 
 ---
 
-## Engineered Behavioral Features (14 Features)
+## Engineered Behavioral Features (15 Features)
 
 All features are engineered strictly from the observation window before the temporal split to eliminate target leakage:
 
@@ -53,7 +53,9 @@ All features are engineered strictly from the observation window before the temp
 | 11 | `dominant_product_category_frequency` | Continuous | Frequency encoding of the customer's primary product category |
 | 12 | `customer_city_state_frequency` | Continuous | Frequency encoding of customer geographic location (captures logistics density) |
 | 13 | `preferred_payment_type_debit_card` | Binary (0/1) | One-hot encoded payment preference: Debit Card |
-| 14 | `preferred_payment_type_not_defined` | Binary (0/1) | One-hot encoded payment preference: Not Defined / voucher fallback |
+| 13 | `preferred_payment_type_boleto` | Binary (0/1) | One-hot encoded payment preference: Boleto |
+| 14 | `preferred_payment_type_debit_card` | Binary (0/1) | One-hot encoded payment preference: Debit Card |
+| 15 | `preferred_payment_type_voucher` | Binary (0/1) | One-hot encoded payment preference: Voucher |
 
 ---
 
@@ -115,7 +117,8 @@ Evaluated across cost-sensitive weights and resampling techniques:
 | **Hyperparameter Tuning** | Optuna (TPE Sampler) | 5-Fold Stratified Bayesian optimization on PR-AUC |
 | **Data Drift & Monitoring** | Population Stability Index (PSI) | Tracking feature & score stability across Train/Val/Test |
 | **Model Persistence** | Joblib | Production bundle packaging (`.joblib` & `.json` metadata) |
-| **Testing** | Pytest | 164 unit and integration tests |
+| **Explainability & Serving** | SHAP, FastAPI, Uvicorn | Feature contributions and HTTP prediction API |
+| **Testing** | Pytest | 169 automated tests |
 
 ---
 
@@ -155,7 +158,13 @@ customer-intelligence-platform/
 │   │   ├── train_lightgbm_model.py       # Production LightGBM model, PSI drift & Optuna tuning
 │   │   ├── imbalance_experiments.py      # 8-strategy class imbalance benchmark suite
 │   │   ├── metrics.py                    # Evaluation metrics & threshold search functions
-│   │   └── experiment_logger.py          # Centralized CSV/Markdown experiment tracker
+│   │   ├── calibration.py                 # Probability calibration and calibrated artifacts
+│   │   ├── threshold_analysis.py          # Validation threshold sweeps
+│   │   ├── model_comparison.py            # Logistic Regression vs LightGBM comparison
+│   │   ├── run_all.py                     # ML-only orchestration
+│   │   ├── run_calibration.py             # Calibration entry point
+│   │   ├── experiment_logger.py            # Centralized CSV/Markdown experiment tracker
+│   │   └── explainibility_interface/      # API, inference, SHAP, reason codes, batch scoring
 │   └── config/
 │       └── label_config.yaml             # Configurable churn observation & return windows
 ├── data/
@@ -166,7 +175,7 @@ customer-intelligence-platform/
 │   └── reports/                          # experiment_log.csv, imbalance benchmarks
 ├── scripts/
 │   └── run_pipeline.py                   # Orchestrates end-to-end data & modeling pipeline
-├── tests/                                # 164 unit tests (database, features, ML models)
+├── tests/                                # Automated tests for database, features, and ML models
 │   ├── test_build_churn_label.py
 │   ├── test_build_features.py
 │   ├── test_cleaning.py
@@ -202,7 +211,8 @@ source .venv/bin/activate       # macOS / Linux
 
 ### 3. Install Dependencies
 ```bash
-pip install -r requirements.txt
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
 ### 4. Database Setup
@@ -217,7 +227,13 @@ Copy `.env.example` to `.env` and configure your database credentials:
 ```bash
 cp .env.example .env
 ```
-Ensure `DB_USER`, `DB_PASSWORD`, `DB_NAME=olist`, and `DATASET_DIR` are populated.
+Ensure `DB_USER`, `DB_PASSWORD`, `DB_NAME`, and `DATASET_DIR` are populated.
+For model serving, set:
+
+```env
+MODEL_PATH=outputs/models/lgb_churn_model_calibrated.joblib
+MODEL_VERSION=v1
+```
 
 ---
 
@@ -225,37 +241,145 @@ Ensure `DB_USER`, `DB_PASSWORD`, `DB_NAME=olist`, and `DATASET_DIR` are populate
 
 The pipeline script [`scripts/run_pipeline.py`](./scripts/run_pipeline.py) orchestrates the entire workflow:
 
-### Option A: Build Database & Feature Tables Only
-```bash
-# Full run including raw CSV ingestion:
-python3 scripts/run_pipeline.py
+### 1. Build the database and feature tables
 
-# Skip CSV ingestion if raw tables already exist in MySQL:
-python3 scripts/run_pipeline.py --skip-ingest
+```bash
+# Ingest the CSV files and build all feature/model-ready tables:
+.venv/bin/python scripts/run_pipeline.py
+
+# Skip ingestion when the raw tables already exist:
+.venv/bin/python scripts/run_pipeline.py --skip-ingest
 ```
 
-### Option B: Build Tables and Train Models
+### 2. Run the complete pipeline
+
+This command builds the feature tables, trains both models, runs imbalance
+experiments, performs threshold analysis and model comparison, calibrates
+LightGBM, and runs
+`app.ml.explainibility_interface.inference.generate_predictions_table` to
+refresh the `churn_predictions` table:
+
 ```bash
-# Build tables and train Logistic Regression:
-python3 scripts/run_pipeline.py --skip-ingest --train-logistic
-
-# Build tables and train LightGBM:
-python3 scripts/run_pipeline.py --skip-ingest --train-lightgbm
-
-# Build tables and train BOTH models:
-python3 scripts/run_pipeline.py --skip-ingest --train-all
+.venv/bin/python scripts/run_pipeline.py --skip-ingest --train-all
 ```
 
-### Option C: Run Standalone ML Modules Directly
+> **Warning:** the final step replaces the full `churn_predictions` table.
+> Run this command only when a complete prediction refresh is intended.
+
+### 3. Run only the ML pipeline
+
+Use this when `model_ready_train`, `model_ready_val`, and
+`model_ready_test` already exist:
+
 ```bash
-# Run standalone Logistic Regression training:
-python3 app/ml/logistic_regression.py
+.venv/bin/python -m app.ml.run_all
 
-# Run standalone LightGBM training (fast mode ~3s):
-python3 app/ml/train_lightgbm_model.py
+# Skip the optional class-imbalance benchmark:
+.venv/bin/python -m app.ml.run_all --skip-imbalance
 
-# Run Class Imbalance 8-strategy benchmarks:
-python3 app/ml/imbalance_experiments.py
+# Re-run analysis, comparison, and calibration using existing model artifacts:
+.venv/bin/python -m app.ml.run_all --skip-training
+```
+
+The ML-only pipeline includes:
+
+- Logistic Regression training
+- LightGBM training
+- Class-imbalance experiments
+- Threshold analysis
+- Model comparison
+- LightGBM calibration
+
+It does **not** refresh `churn_predictions`. Run the batch scoring command in
+step 5 when that table needs to be updated.
+
+### 4. Run individual ML modules
+
+```bash
+.venv/bin/python -m app.ml.logistic_regression
+.venv/bin/python -m app.ml.train_lightgbm_model
+.venv/bin/python -m app.ml.imbalance_experiments
+.venv/bin/python -m app.ml.threshold_analysis
+.venv/bin/python -m app.ml.model_comparison
+```
+
+### 5. Run the explainability interface
+
+The explainability interface loads the configured calibrated model, validates
+the model feature contract, generates churn predictions, calculates SHAP
+feature contributions, and returns business reason codes.
+
+Run the local smoke check without starting the API:
+
+```bash
+.venv/bin/python -m app.ml.explainibility_interface.smoke_check
+```
+
+Start the FastAPI service:
+
+```bash
+.venv/bin/python -m uvicorn \
+  app.ml.explainibility_interface.api.main:app \
+  --reload \
+  --host 127.0.0.1 \
+  --port 8000
+```
+
+Open the interactive API documentation at
+[`http://127.0.0.1:8000/docs`](http://127.0.0.1:8000/docs).
+
+Available endpoints:
+
+```text
+GET  /health
+POST /api/v1/predictions/from-features
+GET  /api/v1/predictions/{customer_unique_id}
+POST /api/v1/predictions/batch
+```
+
+Use `/predictions/from-features` when the caller already has feature values
+and does not want the API to query MySQL. The request body has this shape:
+
+```json
+{
+  "customers": [
+    {
+      "customer_unique_id": "C001",
+      "features": {
+        "monetary_value": 125.5
+      }
+    }
+  ]
+}
+```
+
+The API reads `MODEL_PATH` and `MODEL_VERSION` from `.env`. Run commands from
+the repository root. Using `.venv/bin/python` ensures that Uvicorn, SHAP, and
+the model use the same environment.
+
+The prediction response includes:
+
+- `churn_probability`
+- `shap_values`
+- `reason_codes`
+- `model_version`
+- `scored_at`
+
+The full-customer prediction job reads `features_encoded`, scores eligible
+customers, and refreshes the `churn_predictions` table:
+
+```bash
+.venv/bin/python -m app.ml.explainibility_interface.inference.generate_predictions_table
+```
+
+This job reads every eligible customer from `features_encoded`, generates
+churn probabilities, SHAP values, and reason codes, and replaces the
+`churn_predictions` table.
+
+The same job is run automatically as the final step of:
+
+```bash
+.venv/bin/python scripts/run_pipeline.py --skip-ingest --train-all
 ```
 
 ---
@@ -270,9 +394,9 @@ A successful pipeline run creates the following validated relational tables:
 | Labels | `customer_churn_labels` | Churn flags derived from observation window | 96,095 | 5 |
 | Merge | `customer_features_with_labels` | Joined features and targets | 96,095 | 32 |
 | Encode | `features_encoded` | Frequency encoded & transformed features | 96,095 | 32 |
-| Split | `model_ready_train` | 70% temporal train set (14 features + label + id) | 48,232 | 16 |
-| Split | `model_ready_val` | 15% validation set for threshold tuning | 10,335 | 16 |
-| Split | `model_ready_test` | 15% unseen test set for final reporting | 10,337 | 16 |
+| Split | `model_ready_train` | 70% temporal train set (15 features + label + id) | 48,232 | 17 |
+| Split | `model_ready_val` | 15% validation set for threshold tuning | 10,335 | 17 |
+| Split | `model_ready_test` | 15% unseen test set for final reporting | 10,337 | 17 |
 
 ---
 
@@ -282,7 +406,7 @@ Run the full automated test suite:
 ```bash
 pytest
 ```
-*Current test suite: **164/164 tests passing** with 0 warnings across feature engineering, database pipelines, class imbalance handling, Logistic Regression, and LightGBM model contracts.*
+*Current test suite: **169/169 tests passing** across feature engineering, database pipelines, class imbalance handling, Logistic Regression, and LightGBM model contracts.*
 
 ---
 

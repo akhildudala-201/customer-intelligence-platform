@@ -12,9 +12,19 @@ ML_DIR = ROOT / "app" / "ml"
 
 
 def get_python_executable() -> str:
-    venv_python = ROOT.parent / ".venv" / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
-    if venv_python.exists():
-        return str(venv_python)
+    """Use the currently running Python interpreter if it's already inside a virtualenv,
+    or find the project-local virtual environment."""
+    if sys.prefix != sys.base_prefix:
+        return sys.executable
+
+    project_venv = ROOT / ".venv" / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
+    if project_venv.exists():
+        return str(project_venv)
+
+    parent_venv = ROOT.parent / ".venv" / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
+    if parent_venv.exists():
+        return str(parent_venv)
+
     return sys.executable
 
 
@@ -36,11 +46,7 @@ def main() -> None:
         action="store_true",
         help="Skip the CSV-to-MySQL ingestion step if data is already loaded.",
     )
-    parser.add_argument(
-        "--train-model",
-        action="store_true",
-        help="Train the Logistic Regression churn model after building model-ready tables (alias for --train-logistic).",
-    )
+    
     parser.add_argument(
         "--train-logistic",
         action="store_true",
@@ -54,7 +60,9 @@ def main() -> None:
     parser.add_argument(
         "--train-all",
         action="store_true",
-        help="Train both Logistic Regression and LightGBM models after building model-ready tables.",
+        help="Run the complete ML pipeline after building model-ready tables: "
+             "training, imbalance experiments, threshold analysis, model "
+             "comparison, calibration, and churn_predictions refresh.",
     )
     args = parser.parse_args()
 
@@ -70,17 +78,31 @@ def main() -> None:
         FEATURES_DIR / "feature_selection_and_scaling.py",
     )
 
-    if args.train_all or args.train_logistic or args.train_model:
-        run_step("Training Logistic Regression model", ML_DIR / "logistic_regression.py")
+    if args.train_all:
+        run_step(
+            "Running complete ML training and calibration pipeline",
+            ML_DIR / "run_all.py",
+        )
+        run_step(
+            "Refreshing churn predictions table",
+            ML_DIR / "explainibility_interface"
+            / "inference"
+            / "generate_predictions_table.py",
+        )
+    else:
+        if args.train_logistic:
+            run_step("Training Logistic Regression model", ML_DIR / "logistic_regression.py")
 
-    if args.train_all or args.train_lightgbm:
-        run_step("Training LightGBM model", ML_DIR / "train_lightgbm_model.py")
+        if args.train_lightgbm:
+            run_step("Training LightGBM model", ML_DIR / "train_lightgbm_model.py")
 
     print("\nPipeline complete.")
     print("Model-ready tables created in MySQL:")
     print("- model_ready_train")
     print("- model_ready_val")
     print("- model_ready_test")
+    if args.train_all:
+        print("- churn_predictions (refreshed by generate_predictions_table.py)")
 
 
 if __name__ == "__main__":

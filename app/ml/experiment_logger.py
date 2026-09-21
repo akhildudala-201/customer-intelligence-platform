@@ -46,20 +46,7 @@ def log_experiment(
     artifacts_path: Optional[str] = None,
     log_dir: Optional[Union[str, Path]] = None,
 ) -> int:
-    """Append a model run record to the centralized CSV and Markdown experiment logs.
-
-    Args:
-        model_name: Name of the ML model (e.g., 'LogisticRegression', 'LightGBM').
-        strategy: Imbalance or training strategy description.
-        metrics: Dictionary containing calculated evaluation metrics.
-        features_count: Number of features used in the model.
-        threshold: Decision threshold or operating rate used.
-        artifacts_path: Optional path to serialized model or artifacts.
-        log_dir: Optional directory for log files. Defaults to outputs/reports.
-
-    Returns:
-        Integer run_id assigned to the logged experiment.
-    """
+    
     target_dir = Path(log_dir) if log_dir else DEFAULT_LOG_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     csv_file = target_dir / "experiment_log.csv"
