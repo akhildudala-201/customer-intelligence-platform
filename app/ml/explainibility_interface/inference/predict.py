@@ -1,42 +1,3 @@
-"""
-predict.py
-
-WHY THIS FILE EXISTS
----------------------
-This is the clean, public inference interface for the rest of the system
-(FastAPI, downstream segmentation module, batch jobs, tests). It
-orchestrates the full pipeline described in the architecture doc:
-
-    model artifact -> model_loader -> model_adapter -> feature validation
-    -> predict_proba -> SHAP explainer -> SHAP JSON -> Top-N SHAP features
-    -> reason code mapping -> churn_predictions
-
-`build_prediction_record()` (below) used to live in its own module,
-output/prediction_output.py — folded in here since it was a single ~15
-line function with exactly one caller (this file) and no dedicated tests
-of its own; a whole subpackage (folder + __init__.py + file) for that
-wasn't earning its keep. If it ever grows a second caller or its own
-non-trivial logic, it can move back out.
-
-WHAT IT ACCEPTS
----------------
-`ChurnPredictor(model_path, reason_codes_path, model_version)` — paths to
-the model artifact and reason codes YAML, plus the model's version string.
-model_path and model_version have no built-in default and MUST come from
-either the MODEL_PATH / MODEL_VERSION env vars or explicit constructor
-arguments — there is no dummy/placeholder model to silently fall back to.
-
-`predict(customer_features)` accepts a pandas DataFrame with one or more
-customer rows, containing the ID column + all REQUIRED_FEATURES columns
-(extra columns are tolerated and dropped by feature validation).
-
-WHAT IT RETURNS
-----------------
-`predict()` returns a list of churn_predictions records (dicts), one per
-input row, in the shape built by build_prediction_record() below. Works
-identically for a single customer (1-row DataFrame) and a batch.
-"""
-
 from __future__ import annotations
 
 import os
@@ -56,28 +17,16 @@ from app.ml.explainibility_interface.inference.feature_contract import (
 from app.ml.explainibility_interface.inference.model_adapter import ChurnModelAdapter
 from app.ml.explainibility_interface.inference.model_loader import load_model
 
-
-# Load the project-wide .env before reading MODEL_PATH/MODEL_VERSION below —
-# nothing else in this import chain does this (app.Database.database does
-# its own, separate load, but this module doesn't import that at module
-# level). find_dotenv(usecwd=True) walks upward from the current working
-# directory so this works regardless of which folder a script/pytest run
-# starts from, matching the same pattern used in app/Database/database.py
-# and machine_learning_part/database_connection/db_connection.py.
-# override=False (load_dotenv's default) means real environment variables
-# you've already set always win over .env.
 load_dotenv(find_dotenv(usecwd=True))
 _THIS_DIR = Path(__file__).resolve().parent.parent  # -> app/ml/
 
-# Required: no dummy artifact to fall back to. Set MODEL_PATH in .env to
-# the real calibrated model artifact.
+
 _MODEL_PATH_ENV = os.getenv("MODEL_PATH")
 DEFAULT_MODEL_PATH = Path(_MODEL_PATH_ENV) if _MODEL_PATH_ENV else None
 
 DEFAULT_REASON_CODES_PATH = _THIS_DIR / "config" / "reason_codes.yaml"
 
-# Required: no placeholder version string. Set MODEL_VERSION in .env to
-# whatever identifies the currently-deployed trained model.
+
 MODEL_VERSION = os.getenv("MODEL_VERSION")
 
 TOP_N_REASON_CODES = 3
@@ -96,26 +45,7 @@ def build_prediction_record(
     model_version: str,
     scored_at: str | None = None,
 ) -> dict:
-    """
-    Build a single churn_predictions output record:
 
-        {
-            "customer_unique_id": "C001",
-            "churn_probability": 0.82,
-            "shap_values": {"recency_days": 0.31, "frequency": -0.08, ...},
-            "reason_codes": ["RC01", "RC03"],
-            "model_version": "v1.0",
-            "scored_at": "2026-09-17T12:00:00+00:00"
-        }
-
-    `model_version` is required (no default) — pass whatever identifies
-    the deployed model (ChurnPredictor always passes its own
-    model_version). A caller that omits it gets a TypeError here, not a
-    silently mislabeled record.
-
-    `scored_at` is generated at call time (current UTC timestamp) unless
-    explicitly provided, which is useful for deterministic tests.
-    """
     return {
         "customer_unique_id": customer_unique_id,
         "churn_probability": round(float(churn_probability), 6),
@@ -127,10 +57,7 @@ def build_prediction_record(
 
 
 class ChurnPredictor:
-    """
-    Public inference interface. Construct once (loads the model + reason
-    code config), then call `.predict(df)` as many times as needed.
-    """
+
 
     def __init__(
         self,
@@ -163,12 +90,7 @@ class ChurnPredictor:
         self._top_n_reason_codes = top_n_reason_codes
 
     def predict(self, customer_features: pd.DataFrame) -> list[dict]:
-        """
-        Run the full inference pipeline for one or many customers.
 
-        Steps: validate input -> churn probability -> SHAP values ->
-        SHAP JSON -> top-N reason codes -> assembled output record(s).
-        """
         validated = validate_features(customer_features)
 
         ids = validated[ID_COLUMN].tolist()
@@ -181,12 +103,7 @@ class ChurnPredictor:
         for customer_id, probability, shap_values in zip(
             ids, probabilities, shap_records
         ):
-            # self._adapter.decision_threshold is the calibrated artifact's
-            # own re-tuned probability cutoff (from Person 4's threshold
-            # analysis, via calibration.py's find_optimal_threshold()) —
-            # not a hardcoded guess. See model_adapter.py's docstring for
-            # what it falls back to when the loaded artifact isn't a
-            # calibrated one.
+
             reason_codes = select_top_reason_codes(
                 shap_values,
                 self._reason_code_config,
@@ -206,10 +123,5 @@ class ChurnPredictor:
 
 
 def predict(customer_features: pd.DataFrame) -> list[dict]:
-    """
-    Module-level convenience function for simple/one-off use. Internally
-    builds a ChurnPredictor using default (env-configured) paths on every
-    call. For repeated predictions, prefer constructing a single
-    ChurnPredictor and reusing it — more efficient, model loaded once.
-    """
+
     return ChurnPredictor().predict(customer_features)
