@@ -13,8 +13,8 @@ from contextlib import contextmanager
 import pandas as pd
 import pytest
 
-import app.ml.explainibility_interface.data_access.customer_feature_repository as repo
-from app.ml.explainibility_interface.inference.feature_contract import ID_COLUMN, REQUIRED_FEATURES
+import app.ml.explainibility_inference.data_access.customer_feature_repository as repo
+from app.ml.explainibility_inference.inference.feature_contract import ID_COLUMN, REQUIRED_FEATURES
 
 
 class _FakeEngine:

@@ -35,7 +35,7 @@ WHAT IT DOES
 
 RUNNING IT
 ----------
-    python -m app.ml.explainibility_interface.inference.generate_predictions_table
+    python -m app.ml.explainibility_inference.inference.generate_predictions_table
 
 Requires the same env vars as the rest of the package: DB_HOST/DB_PORT/
 DB_USER/DB_PASSWORD/DB_NAME (for reading+writing) and MODEL_PATH/
@@ -49,14 +49,14 @@ import json
 
 import pandas as pd
 
-from app.ml.explainibility_interface.data_access.customer_feature_repository import (
+from app.ml.explainibility_inference.data_access.customer_feature_repository import (
     get_all_customer_features,
 )
-from app.ml.explainibility_interface.inference.feature_contract import (
+from app.ml.explainibility_inference.inference.feature_contract import (
     ID_COLUMN,
     REQUIRED_FEATURES,
 )
-from app.ml.explainibility_interface.inference.predict import ChurnPredictor
+from app.ml.explainibility_inference.inference.predict import ChurnPredictor
 
 OUTPUT_TABLE_NAME = "churn_predictions"
 

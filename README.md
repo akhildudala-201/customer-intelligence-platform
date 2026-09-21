@@ -164,7 +164,7 @@ customer-intelligence-platform/
 │   │   ├── run_all.py                     # ML-only orchestration
 │   │   ├── run_calibration.py             # Calibration entry point
 │   │   ├── experiment_logger.py            # Centralized CSV/Markdown experiment tracker
-│   │   └── explainibility_interface/      # API, inference, SHAP, reason codes, batch scoring
+│   │   └── explainibility_inference/      # API, inference, SHAP, reason codes, batch scoring
 │   └── config/
 │       └── label_config.yaml             # Configurable churn observation & return windows
 ├── data/
@@ -256,7 +256,7 @@ The pipeline script [`scripts/run_pipeline.py`](./scripts/run_pipeline.py) orche
 This command builds the feature tables, trains both models, runs imbalance
 experiments, performs threshold analysis and model comparison, calibrates
 LightGBM, and runs
-`app.ml.explainibility_interface.inference.generate_predictions_table` to
+`app.ml.explainibility_inference.inference.generate_predictions_table` to
 refresh the `churn_predictions` table:
 
 ```bash
@@ -312,14 +312,14 @@ feature contributions, and returns business reason codes.
 Run the local smoke check without starting the API:
 
 ```bash
-.venv/bin/python -m app.ml.explainibility_interface.smoke_check
+.venv/bin/python -m app.ml.explainibility_inference.smoke_check
 ```
 
 Start the FastAPI service:
 
 ```bash
 .venv/bin/python -m uvicorn \
-  app.ml.explainibility_interface.api.main:app \
+  app.ml.explainibility_inference.api.main:app \
   --reload \
   --host 127.0.0.1 \
   --port 8000
@@ -369,7 +369,7 @@ The full-customer prediction job reads `features_encoded`, scores eligible
 customers, and refreshes the `churn_predictions` table:
 
 ```bash
-.venv/bin/python -m app.ml.explainibility_interface.inference.generate_predictions_table
+.venv/bin/python -m app.ml.explainibility_inference.inference.generate_predictions_table
 ```
 
 This job reads every eligible customer from `features_encoded`, generates

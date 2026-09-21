@@ -1,12 +1,12 @@
 """
-conftest.py (app/ml/tests/explainibility_interface_tests/inference/)
+conftest.py (app/ml/tests/explainibility_inference_tests/inference/)
 
 Shared fixtures for the explainability/integration (Person 6) test suite.
-Kept in its own app/ml/tests/explainibility_interface_tests/inference/
+Kept in its own app/ml/tests/explainibility_inference_tests/inference/
 package, separate from the top-level tests/ (owned by Feature
 Engineering), so this module can be tested independently without
 touching other interns' test setup. Sys.path setup lives in
-app/ml/tests/explainibility_interface_tests/conftest.py, a parent of
+app/ml/tests/explainibility_inference_tests/conftest.py, a parent of
 this file, and applies here automatically via pytest's normal
 conftest.py inheritance — this file holds only fixtures specific to
 inference tests.
@@ -17,7 +17,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from app.ml.explainibility_interface.inference.predict import ChurnPredictor, DEFAULT_MODEL_PATH, DEFAULT_REASON_CODES_PATH
+from app.ml.explainibility_inference.inference.predict import ChurnPredictor, DEFAULT_MODEL_PATH, DEFAULT_REASON_CODES_PATH
 
 # Real customer_unique_id format from the Olist dataset (32-char hex, see
 # data/olist_customers_dataset.csv) rather than a placeholder ID, so tests

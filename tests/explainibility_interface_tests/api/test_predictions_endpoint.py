@@ -2,7 +2,7 @@
 test_predictions_endpoint.py
 
 Exercises the FastAPI routes in
-app/ml/explainibility_interface/api/main.py in isolation from both the
+app/ml/explainibility_inference/api/main.py in isolation from both the
 real model and the real database:
 
 - The predictor dependency (get_predictor) is overridden with a fake
@@ -18,7 +18,7 @@ tests/inference suite being independent of Person 5's final model.
 
 Moved here from the top-level tests/api/ (see git history / PR) so all
 of Person 6's tests — unit, integration, and API — live under one
-app/ml/tests/explainibility_interface_tests/ tree, mirroring the
+app/ml/tests/explainibility_inference_tests/ tree, mirroring the
 inference/ and data_access/ subfolders already there.
 """
 
@@ -28,9 +28,9 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-import app.ml.explainibility_interface.api.main as main_module
-from app.ml.explainibility_interface.api.dependencies import get_predictor
-from app.ml.explainibility_interface.data_access.customer_feature_repository import (
+import app.ml.explainibility_inference.api.main as main_module
+from app.ml.explainibility_inference.api.dependencies import get_predictor
+from app.ml.explainibility_inference.data_access.customer_feature_repository import (
     CustomerNotFoundError,
 )
 

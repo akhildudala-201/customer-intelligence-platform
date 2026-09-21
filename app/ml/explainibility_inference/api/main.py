@@ -60,18 +60,18 @@ import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.ml.explainibility_interface.api.dependencies import get_predictor
-from app.ml.explainibility_interface.api.schemas import (
+from app.ml.explainibility_inference.api.dependencies import get_predictor
+from app.ml.explainibility_inference.api.schemas import (
     BatchPredictRequest,
     ChurnPredictionResponse,
     FeaturesPredictRequest,
 )
-from app.ml.explainibility_interface.data_access.customer_feature_repository import (
+from app.ml.explainibility_inference.data_access.customer_feature_repository import (
     CustomerNotFoundError,
     get_customer_features,
     get_customer_features_batch,
 )
-from app.ml.explainibility_interface.inference.predict import ChurnPredictor
+from app.ml.explainibility_inference.inference.predict import ChurnPredictor
 
 API_PREFIX = os.getenv("API_PREFIX", "/api/v1")
 _allowed_origins = os.getenv("ALLOWED_ORIGINS", "")

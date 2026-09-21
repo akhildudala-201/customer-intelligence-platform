@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import json
 
-from app.ml.explainibility_interface.explainability.shap_explainer import ChurnShapExplainer
-from app.ml.explainibility_interface.inference.feature_contract import REQUIRED_FEATURES
-from app.ml.explainibility_interface.inference.model_adapter import ChurnModelAdapter
-from app.ml.explainibility_interface.inference.model_loader import load_model
-from app.ml.explainibility_interface.inference.predict import DEFAULT_MODEL_PATH
+from app.ml.explainibility_inference.explainability.shap_explainer import ChurnShapExplainer
+from app.ml.explainibility_inference.inference.feature_contract import REQUIRED_FEATURES
+from app.ml.explainibility_inference.inference.model_adapter import ChurnModelAdapter
+from app.ml.explainibility_inference.inference.model_loader import load_model
+from app.ml.explainibility_inference.inference.predict import DEFAULT_MODEL_PATH
 
 
 def _build_explainer() -> ChurnShapExplainer:

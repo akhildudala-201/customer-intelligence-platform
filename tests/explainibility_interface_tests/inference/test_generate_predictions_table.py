@@ -14,8 +14,8 @@ import json
 import pandas as pd
 import pytest
 
-import app.ml.explainibility_interface.inference.generate_predictions_table as gpt
-from app.ml.explainibility_interface.inference.feature_contract import (
+import app.ml.explainibility_inference.inference.generate_predictions_table as gpt
+from app.ml.explainibility_inference.inference.feature_contract import (
     REQUIRED_FEATURES,
 )
 
@@ -93,7 +93,7 @@ def test_generate_predictions_table_writes_expected_columns(monkeypatch):
 
 def test_generate_predictions_table_raises_when_no_customers(monkeypatch):
     def _raise_no_customers():
-        from app.ml.explainibility_interface.data_access.customer_feature_repository import (
+        from app.ml.explainibility_inference.data_access.customer_feature_repository import (
             CustomerNotFoundError,
         )
 
@@ -101,7 +101,7 @@ def test_generate_predictions_table_raises_when_no_customers(monkeypatch):
 
     monkeypatch.setattr(gpt, "get_all_customer_features", _raise_no_customers)
 
-    from app.ml.explainibility_interface.data_access.customer_feature_repository import (
+    from app.ml.explainibility_inference.data_access.customer_feature_repository import (
         CustomerNotFoundError,
     )
 

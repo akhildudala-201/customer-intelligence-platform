@@ -85,7 +85,7 @@ def main() -> None:
         )
         run_step(
             "Refreshing churn predictions table",
-            ML_DIR / "explainibility_interface"
+            ML_DIR / "explainibility_inference"
             / "inference"
             / "generate_predictions_table.py",
         )

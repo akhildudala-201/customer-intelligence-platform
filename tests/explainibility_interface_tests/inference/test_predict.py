@@ -15,14 +15,14 @@ import json
 import pandas as pd
 import pytest
 
-from app.ml.explainibility_interface.config.reason_code_lookup import load_reason_codes, select_top_reason_codes
-from app.ml.explainibility_interface.inference.feature_contract import (
+from app.ml.explainibility_inference.config.reason_code_lookup import load_reason_codes, select_top_reason_codes
+from app.ml.explainibility_inference.inference.feature_contract import (
     FeatureValidationError,
     REQUIRED_FEATURES,
     validate_features,
 )
-from app.ml.explainibility_interface.inference.model_loader import ModelArtifactNotFoundError, load_model
-from app.ml.explainibility_interface.inference.predict import DEFAULT_MODEL_PATH, DEFAULT_REASON_CODES_PATH, MODEL_VERSION
+from app.ml.explainibility_inference.inference.model_loader import ModelArtifactNotFoundError, load_model
+from app.ml.explainibility_inference.inference.predict import DEFAULT_MODEL_PATH, DEFAULT_REASON_CODES_PATH, MODEL_VERSION
 
 
 # ---------------------------------------------------------------------------

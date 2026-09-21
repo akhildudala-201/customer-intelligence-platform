@@ -24,7 +24,7 @@ a hardcoded feature row instead of data_access.
 
 RUNNING IT
 ----------
-    python -m app.ml.explainibility_interface.smoke_check
+    python -m app.ml.explainibility_inference.smoke_check
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ if _PROJECT_ROOT not in sys.path:
 
 import pandas as pd
 
-from app.ml.explainibility_interface.inference.predict import ChurnPredictor
+from app.ml.explainibility_inference.inference.predict import ChurnPredictor
 
 # Same shape as tests/inference/conftest.py's sample_customer_df fixture —
 # a real Olist-format customer_unique_id and the model's feature contract.

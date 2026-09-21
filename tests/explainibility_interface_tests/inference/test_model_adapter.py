@@ -20,8 +20,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from app.ml.explainibility_interface.inference.feature_contract import REQUIRED_FEATURES, check_contract_matches_model
-from app.ml.explainibility_interface.inference.model_adapter import ChurnModelAdapter
+from app.ml.explainibility_inference.inference.feature_contract import REQUIRED_FEATURES, check_contract_matches_model
+from app.ml.explainibility_inference.inference.model_adapter import ChurnModelAdapter
 
 
 class _FakeModel:
