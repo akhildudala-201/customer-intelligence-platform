@@ -1,0 +1,102 @@
+# reason_codes.yaml
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# Reason codes must be configuration-driven, not hard-coded in Python, so
+# business/product stakeholders can add, edit, or retire reason codes
+# without touching code. Each code maps ONE feature (from
+# app/ml/inference/feature_contract.py) + direction of SHAP contribution
+# to a business-friendly explanation string.
+#
+# direction:
+#   "positive" -> feature pushed the churn probability UP (increases risk)
+#   "negative" -> feature pushed the churn probability DOWN (decreases risk)
+#
+# Matches the real model's 13-column feature contract (see
+# feature_contract.py). 6 of those 13 features have BOTH directions mapped
+# below (RC04-RC15) -- for a feature whose direction is unambiguous one
+# way ("orders arrive late" -> higher risk), the opposite direction is the
+# same feature's natural logical complement ("orders arrive on time" ->
+# lower risk), not a new claim, so both were added.
+#
+# The remaining 7 trained features are NOT mapped in EITHER direction,
+# because guessing a business direction for them would be fabricating a
+# claim, not describing one -- these need product/business sign-off first:
+#   monetary_value, avg_payment_installments, has_review_comment,
+#   avg_product_weight_g, dominant_product_category_frequency,
+#   customer_city_state_frequency, preferred_payment_type_debit_card
+# select_top_reason_codes() already handles unmapped top-SHAP features
+# gracefully (skips them rather than erroring), so predictions still
+# work, just with fewer/no reason codes on customers whose top drivers
+# are among the 7 above. This is common, not a bug -- a real customer's
+# top-3 SHAP drivers landing entirely on unmapped features (or a mapped
+# feature's OTHER direction, before RC10-RC15 existed) is exactly why
+# reason_codes can legitimately come back as [] for some customers.
+#
+# PRUNED: RC01 (canceled_orders), RC02 (unavailable_orders), RC03
+# (delivered_rate) were removed -- those 3 features were dropped from
+# feature_contract.REQUIRED_FEATURES as label-leakage (see
+# feature_contract.py's history note) and the trained model has never
+# produced SHAP values for them, so those codes could never fire. Kept
+# the RC04+ numbering unchanged rather than renumbering, since any
+# already-logged predictions/experiments may reference these codes.
+
+RC04:
+  feature: avg_review_score
+  direction: negative
+  message: "Customer leaves positive reviews, which lowers churn risk."
+
+RC04B:
+  feature: avg_review_score
+  direction: positive
+  message: "Customer leaves negative or lukewarm reviews, which increases churn risk."
+
+RC05:
+  feature: has_bad_review
+  direction: positive
+  message: "Customer has left at least one bad review, which increases churn risk."
+
+RC05B:
+  feature: has_bad_review
+  direction: negative
+  message: "Customer has no bad reviews on record, which lowers churn risk."
+
+RC06:
+  feature: freight_ratio
+  direction: positive
+  message: "Shipping cost makes up a large share of the customer's order value, which increases churn risk."
+
+RC06B:
+  feature: freight_ratio
+  direction: negative
+  message: "Shipping cost makes up a small share of the customer's order value, which lowers churn risk."
+
+RC07:
+  feature: avg_delivery_days
+  direction: positive
+  message: "Customer's orders tend to arrive slowly, which increases churn risk."
+
+RC07B:
+  feature: avg_delivery_days
+  direction: negative
+  message: "Customer's orders tend to arrive quickly, which lowers churn risk."
+
+RC08:
+  feature: avg_delivery_delay_days
+  direction: positive
+  message: "Customer's orders tend to arrive later than promised, which increases churn risk."
+
+RC08B:
+  feature: avg_delivery_delay_days
+  direction: negative
+  message: "Customer's orders tend to arrive earlier than promised, which lowers churn risk."
+
+RC09:
+  feature: is_delayed_delivery
+  direction: positive
+  message: "Customer's most recent order was delivered late, which increases churn risk."
+
+RC09B:
+  feature: is_delayed_delivery
+  direction: negative
+  message: "Customer's most recent order was delivered on time, which lowers churn risk."
