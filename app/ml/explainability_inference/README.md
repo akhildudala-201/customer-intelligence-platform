@@ -40,7 +40,7 @@ Before this code will run, you need:
 ## Setup
 
 ```bash
-pip install -r app/ml/explainibility_interface/requirements.txt
+pip install -r app/ml/explainability_inference/requirements.txt
 ```
 
 ## What's in this folder
@@ -55,28 +55,28 @@ smoke_check.py → quick manual check that everything works
 requirements.txt → just the packages this folder needs
 ```
 
-Tests for this folder live in `app/ml/tests/explainibility_interface_tests/`.
+Tests for this folder live in `app/ml/tests/explainability_inference_tests/`.
 
 ## Running it
 
 **Score every customer at once** (this is what the segmentation part reads from):
 ```bash
-python -m app.ml.explainibility_interface.inference.generate_predictions_table
+python -m app.ml.explainability_inference.inference.generate_predictions_table
 ```
 
 **Or run a live API** to get predictions on demand:
 ```bash
-uvicorn app.ml.explainibility_interface.api.main:app --reload --host 127.0.0.1 --port 8000
+uvicorn app.ml.explainability_inference.api.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 **Quick check that the pipeline works** (prints one prediction, no setup needed beyond the prerequisites above):
 ```bash
-python -m app.ml.explainibility_interface.smoke_check
+python -m app.ml.explainability_inference.smoke_check
 ```
 
 ## Running the tests
 
 ```bash
-python -m pytest app/ml/tests/explainibility_interface_tests -v
+python -m pytest app/ml/tests/explainability_inference_tests -v
 ```
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 from sqlalchemy import bindparam, text
 
-from app.ml.explainibility_interface.inference.feature_contract import ID_COLUMN, REQUIRED_FEATURES
+from app.ml.explainability_inference.inference.feature_contract import ID_COLUMN, REQUIRED_FEATURES
 
 TABLE_NAME = "features_encoded"
 

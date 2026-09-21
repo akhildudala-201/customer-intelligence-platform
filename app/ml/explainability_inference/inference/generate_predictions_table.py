@@ -4,14 +4,14 @@ import json
 
 import pandas as pd
 
-from app.ml.explainibility_interface.data_access.customer_feature_repository import (
+from app.ml.explainability_inference.data_access.customer_feature_repository import (
     get_all_customer_features,
 )
-from app.ml.explainibility_interface.inference.feature_contract import (
+from app.ml.explainability_inference.inference.feature_contract import (
     ID_COLUMN,
     REQUIRED_FEATURES,
 )
-from app.ml.explainibility_interface.inference.predict import ChurnPredictor
+from app.ml.explainability_inference.inference.predict import ChurnPredictor
 
 OUTPUT_TABLE_NAME = "churn_predictions"
 

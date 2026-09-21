@@ -6,16 +6,16 @@ from pathlib import Path
 
 import pandas as pd
 from dotenv import find_dotenv, load_dotenv
-from app.ml.explainibility_interface.config.reason_code_lookup import load_reason_codes, select_top_reason_codes
-from app.ml.explainibility_interface.explainability.shap_explainer import ChurnShapExplainer
-from app.ml.explainibility_interface.inference.feature_contract import (
+from app.ml.explainability_inference.config.reason_code_lookup import load_reason_codes, select_top_reason_codes
+from app.ml.explainability_inference.explainability.shap_explainer import ChurnShapExplainer
+from app.ml.explainability_inference.inference.feature_contract import (
     ID_COLUMN,
     REQUIRED_FEATURES,
     check_contract_matches_model,
     validate_features,
 )
-from app.ml.explainibility_interface.inference.model_adapter import ChurnModelAdapter
-from app.ml.explainibility_interface.inference.model_loader import load_model
+from app.ml.explainability_inference.inference.model_adapter import ChurnModelAdapter
+from app.ml.explainability_inference.inference.model_loader import load_model
 
 load_dotenv(find_dotenv(usecwd=True))
 _THIS_DIR = Path(__file__).resolve().parent.parent  # -> app/ml/
