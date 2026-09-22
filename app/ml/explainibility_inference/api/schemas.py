@@ -1,17 +1,3 @@
-"""
-schemas.py
-
-WHY THIS FILE EXISTS
----------------------
-Keeps the API's request/response shapes in one place, separate from
-routing logic in main.py.
-
-WHAT CHANGES WHEN PERSON 5 SUPPLIES THE FINAL MODEL
------------------------------------------------------
-Nothing here — these shapes describe the API contract (ids in, prediction
-records out), not the model's feature contract.
-"""
-
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
