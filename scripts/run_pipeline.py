@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DB_DIR = ROOT / "app" / "Database"
 FEATURES_DIR = ROOT / "app" / "Features"
+TRENDS_DIR = ROOT / "app" / "Segmentation" / "customer_analytics" / "Trends"
 ML_DIR = ROOT / "app" / "ml"
 
 
@@ -46,7 +47,11 @@ def main() -> None:
         action="store_true",
         help="Skip the CSV-to-MySQL ingestion step if data is already loaded.",
     )
-    
+    parser.add_argument(
+        "--skip-trends",
+        action="store_true",
+        help="Skip the Person 5 Historical Trend Analysis step.",
+    )
     parser.add_argument(
         "--train-logistic",
         action="store_true",
@@ -78,6 +83,12 @@ def main() -> None:
         FEATURES_DIR / "feature_selection_and_scaling.py",
     )
 
+    if not args.skip_trends:
+        run_step(
+            "Historical Trend Analysis (Person 5 - Schema 6.5)",
+            TRENDS_DIR / "pipeline.py",
+        )
+
     if args.train_all:
         run_step(
             "Running complete ML training and calibration pipeline",
@@ -91,10 +102,13 @@ def main() -> None:
             run_step("Training LightGBM model", ML_DIR / "train_lightgbm_model.py")
 
     print("\nPipeline complete.")
-    print("Model-ready tables created in MySQL:")
+    print("Model-ready tables and Schema 6.5 trends created in MySQL:")
     print("- model_ready_train")
     print("- model_ready_val")
     print("- model_ready_test")
+    print("- historical_revenue_trend (Schema 6.5)")
+    print("- historical_churn_trend (Schema 6.5)")
+    print("- historical_trend_combined (Schema 6.5)")
 
 
 if __name__ == "__main__":

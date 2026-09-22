@@ -1,0 +1,36 @@
+# Configuration for Person 5 - Historical Trend Analysis (Schema 6.5)
+
+reference_date: "2018-10-17"
+return_window_days: 180
+
+# Granularities to generate by default
+granularities:
+  - "daily"
+  - "weekly"
+  - "monthly"
+
+# Rolling window settings for each granularity
+rolling_windows:
+  daily:
+    short: 7
+    long: 30
+  weekly:
+    short: 4
+    long: 12
+  monthly:
+    short: 3
+    long: 6
+
+# Order statuses to exclude from trend analysis
+excluded_order_statuses:
+  - "canceled"
+  - "unavailable"
+
+# Database tables for persistence
+db_tables:
+  revenue_trend: "historical_revenue_trend"
+  churn_trend: "historical_churn_trend"
+  combined_trend: "historical_trend_combined"
+
+# Output directory for exported reports
+output_dir: "outputs/reports"
