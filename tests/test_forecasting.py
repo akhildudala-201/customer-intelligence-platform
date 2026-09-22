@@ -1,21 +1,4 @@
-"""
-Unit tests for:
-    app/segmentation/customer_analytics/forecasting/forecasting.py
 
-Run from the project root with:
-    pytest app/segmentation/customer_analytics/forecasting/test_forecasting.py -v
-
-Or, if placed elsewhere, adjust MODULE_PATH below to match where
-forecasting.py actually lives as an importable module.
-
-WHY THE STUBBING:
-forecasting.py does `from app.Database.database import engine` at import
-time. That module reads a real .env file and raises if DB_HOST etc. are
-missing. To keep these tests fast, deterministic, and runnable without a
-live DB or .env file, we inject a fake app.Database.database module into
-sys.modules BEFORE forecasting.py is imported, so the import line
-succeeds against a MagicMock engine instead of a real connection.
-"""
 
 import sys
 import types
@@ -26,22 +9,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-# Change this if your test file lives somewhere else relative to the
-# project root / your import path.
+
 MODULE_PATH = "app.segmentation.customer_analytics.forecasting.forecasting"
 
 
-# ----------------------------------------------------------------------
-# Stub app.Database.database BEFORE forecasting.py is imported.
-#
-# IMPORTANT: we do NOT replace `app` or `app.Database` themselves with
-# fake modules -- doing so strips their real __path__ and breaks every
-# other import under app.* (e.g. app.segmentation...forecasting), which
-# is what caused "ModuleNotFoundError: No module named 'app.segmentation';
-# 'app' is not a package" the first time around. Instead we let the real
-# `app` and `app.Database` packages import normally, and only replace the
-# leaf module `app.Database.database` with a fake one.
-# ----------------------------------------------------------------------
 @pytest.fixture(scope="session", autouse=True)
 def _stub_database_module():
     # Import the REAL parent packages first, so their __path__ stays intact

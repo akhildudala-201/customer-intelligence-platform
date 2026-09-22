@@ -1,15 +1,4 @@
-"""
-TASK 6 - FORECASTING (Person 6 / "G")
----------------------------------------------------------------
-Uses the shared DB engine/config from app.Database.database instead of
-loading its own .env file separately. Must be run from within the
-project so that `app` is importable (i.e. app/Database/database.py can
-be found on the Python path).
 
-Reads monthly rows from `historical_trend_combined` and writes forecasts
-to three new tables: forecast_revenue_trend, forecast_churn_trend,
-forecast_trend_combined.
-"""
 
 from pathlib import Path
 import numpy as np
@@ -17,18 +6,10 @@ import pandas as pd
 from sqlalchemy import text
 from statsmodels.tsa.exponential_smoothing.ets import ETSModel
 
-# ----------------------------------------------------------------------
-# STEP 0 - DB CONNECTION
-# (was previously self-loaded from .env here; now reuses the shared
-# engine already configured in app.Database.database)
-# ----------------------------------------------------------------------
 from app.Database.database import engine
 
 np.random.seed(42)
 
-# ----------------------------------------------------------------------
-# STEP 0b - CONFIG
-# ----------------------------------------------------------------------
 GRANULARITY = "monthly"                        # "daily", "weekly", or "monthly"
 INPUT_TABLE = "historical_trend_combined"
 FORECAST_HORIZON = 6                           # periods ahead to forecast
@@ -127,10 +108,7 @@ def fit_and_forecast(series, horizon, seasonal_periods, seasonal="add", trend="a
     effective_seasonal = seasonal if use_seasonal else None
     effective_seasonal_periods = seasonal_periods if use_seasonal else None
 
-    # damped_trend=True prevents runaway extrapolation of an early ramp-up
-    # trend into the indefinite future (a real risk here: early history has
-    # near-zero churn before the business matured, and an undamped trend
-    # would keep projecting that early growth rate forever).
+
     model = ETSModel(
         series,
         error="add",
