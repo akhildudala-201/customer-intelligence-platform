@@ -1,0 +1,7 @@
+period_start,granularity,forecasted_revenue,ci_lower_revenue,ci_upper_revenue,model_used
+2018-09-01,monthly,935932.6,536114.03,1335751.18,ETS Holt-Winters (additive)
+2018-10-01,monthly,947208.63,491214.19,1403203.07,ETS Holt-Winters (additive)
+2018-11-01,monthly,1119350.81,613370.75,1625330.87,ETS Holt-Winters (additive)
+2018-12-01,monthly,944723.7,393262.73,1496184.68,ETS Holt-Winters (additive)
+2019-01-01,monthly,1158428.43,564954.97,1751901.89,ETS Holt-Winters (additive)
+2019-02-01,monthly,1143062.69,510354.14,1775771.24,ETS Holt-Winters (additive)
