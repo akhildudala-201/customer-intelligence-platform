@@ -1,5 +1,5 @@
 """
-app/Trends/export.py
+app/segmentation/customer_analytics/Trends/export.py
 
 Persistence and export module for Historical Trend Analysis (Person 5).
 Handles saving Schema 6.5 tables into MySQL and exporting JSON/CSV reports.
@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, Optional
 import pandas as pd
 from sqlalchemy import engine as sql_engine
+
 
 def _find_root() -> Path:
     current = Path(__file__).resolve()
@@ -142,11 +143,12 @@ class TrendExporter:
     def _generate_summary_metadata(
         self, trend_results: Dict[str, Dict[str, pd.DataFrame]]
     ) -> dict:
-        """Construct a high-level summary of historical trend metrics."""
+        """Construct a high-level summary of historical trend metrics with validation results."""
         summary = {
             "schema_version": "6.5",
             "component": "Person 5 - Historical Trend Analysis",
             "target_consumer": "Person 6 - Forecasting",
+            "validation_results": trend_results.get("all_granularities_combined", {}).get("validation", {}),
             "granularities": {},
         }
 
@@ -156,10 +158,17 @@ class TrendExporter:
                 rev = bundle.get("revenue", pd.DataFrame())
                 churn = bundle.get("churn", pd.DataFrame())
 
+                censored_count = (
+                    int(churn["is_censored"].sum())
+                    if not churn.empty and "is_censored" in churn.columns
+                    else 0
+                )
+
                 summary["granularities"][gran] = {
                     "total_periods": len(rev),
                     "date_start": str(rev["period_date"].min()) if not rev.empty else None,
                     "date_end": str(rev["period_date"].max()) if not rev.empty else None,
+                    "censored_periods": censored_count,
                     "total_historical_revenue": float(rev["total_revenue"].sum()) if not rev.empty else 0.0,
                     "total_orders": int(rev["order_count"].sum()) if not rev.empty else 0,
                     "avg_period_revenue": float(rev["total_revenue"].mean()) if not rev.empty else 0.0,

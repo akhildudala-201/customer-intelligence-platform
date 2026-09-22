@@ -1,5 +1,5 @@
 """
-app/Trends/data_loader.py
+app/segmentation/customer_analytics/Trends/data_loader.py
 
 Data Loader for Historical Trend Analysis.
 Retrieves and prepares transactional, customer, and churn datasets from either
@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 import pandas as pd
 import yaml
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
+
 
 def _find_root() -> Path:
     current = Path(__file__).resolve()
@@ -101,7 +102,9 @@ class TrendDataLoader:
         reference_date: pd.Timestamp,
         excluded_statuses: list,
     ) -> pd.DataFrame:
-        """Query orders joined with customers and payments from MySQL."""
+        """Query orders joined with customers and payments from MySQL using expanding bind."""
+        statuses = list(excluded_statuses) if excluded_statuses else ["__NONE__"]
+
         query = text("""
             SELECT
                 o.order_id,
@@ -125,7 +128,10 @@ class TrendDataLoader:
             WHERE o.order_purchase_timestamp IS NOT NULL
               AND o.order_purchase_timestamp <= :reference_date
               AND o.order_status NOT IN :excluded_statuses
-        """)
+        """).bindparams(
+            bindparam("reference_date"),
+            bindparam("excluded_statuses", expanding=True),
+        )
 
         with self.db_engine.connect() as conn:
             df = pd.read_sql(
@@ -133,7 +139,7 @@ class TrendDataLoader:
                 conn,
                 params={
                     "reference_date": reference_date,
-                    "excluded_statuses": tuple(statuses) if (statuses := excluded_statuses) else ("__NONE__",),
+                    "excluded_statuses": statuses,
                 },
             )
 
@@ -209,29 +215,30 @@ class TrendDataLoader:
     def load_customer_churn_data(
         self,
         reference_date: Optional[pd.Timestamp] = None,
+        return_window_days: Optional[int] = None,
     ) -> pd.DataFrame:
         """
         Load customer churn labels and order timelines.
         Returns a DataFrame with:
-        ['customer_unique_id', 'first_order_date', 'last_order_date', 'days_since_last_order', 'label', 'censored']
+        ['customer_unique_id', 'first_order_date', 'last_order_date', 'days_since_last_order', 'num_valid_orders', 'censored', 'label']
         """
+        ref_date = reference_date or pd.Timestamp(self.config.get("reference_date", "2018-10-17"))
+        return_window = int(return_window_days or self.config.get("return_window_days", 180))
+
         # Try database table first
         if self.db_engine is not None:
             try:
                 with self.db_engine.connect() as conn:
                     query = text("SELECT * FROM customer_churn_labels")
                     df = pd.read_sql(query, conn)
-                    if not df.empty:
+                    if not df.empty and "label" in df.columns and "censored" in df.columns:
                         df["first_order_date"] = pd.to_datetime(df["first_order_date"])
                         df["last_order_date"] = pd.to_datetime(df["last_order_date"])
                         return df
             except Exception:
                 pass
 
-        # If not in DB, calculate dynamically using transaction data
-        ref_date = reference_date or pd.Timestamp(self.config.get("reference_date", "2018-10-17"))
-        return_window = int(self.config.get("return_window_days", 180))
-
+        # Fallback: compute dynamically using transaction data
         orders = self.load_transaction_data(reference_date=ref_date)
         if orders.empty:
             return pd.DataFrame(

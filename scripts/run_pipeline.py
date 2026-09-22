@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DB_DIR = ROOT / "app" / "Database"
 FEATURES_DIR = ROOT / "app" / "Features"
-TRENDS_DIR = ROOT / "app" / "Segmentation" / "customer_analytics" / "Trends"
+TRENDS_DIR = ROOT / "app" / "segmentation" / "customer_analytics" / "Trends"
 ML_DIR = ROOT / "app" / "ml"
 
 

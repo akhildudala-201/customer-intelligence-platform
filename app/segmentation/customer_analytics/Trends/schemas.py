@@ -1,5 +1,5 @@
 """
-app/Trends/schemas.py
+app/segmentation/customer_analytics/Trends/schemas.py
 
 Schema 6.5 Specification for Historical Trend Analysis (Person 5 -> Person 6 Contract).
 Provides data validation schemas, column specifications, and validation utilities
@@ -38,6 +38,7 @@ CHURN_TREND_COLUMNS: List[str] = [
     "retention_rate",
     "rolling_churn_rate",
     "cumulative_churned",
+    "is_censored",
     "is_forecast",
 ]
 
@@ -57,6 +58,7 @@ COMBINED_TREND_COLUMNS: List[str] = [
     "churn_rate",
     "retention_rate",
     "rolling_churn_rate",
+    "is_censored",
     "is_forecast",
 ]
 
@@ -91,6 +93,7 @@ class ChurnTrendRecord:
     retention_rate: float
     rolling_churn_rate: Optional[float] = None
     cumulative_churned: int = 0
+    is_censored: bool = False
     is_forecast: bool = False
 
 
@@ -132,8 +135,8 @@ def validate_revenue_trend_schema(df: pd.DataFrame) -> Schema65ValidationResult:
 
     # Check is_forecast flag exists and boolean
     if "is_forecast" in df.columns and not pd.api.types.is_bool_dtype(df["is_forecast"]):
-        # Allow numeric 0/1 or convert to bool
-        pass
+        if not set(df["is_forecast"].dropna().unique()).issubset({True, False, 0, 1}):
+            errors.append("'is_forecast' must be boolean or 0/1.")
 
     null_counts = {col: int(df[col].isna().sum()) for col in df.columns if col in REVENUE_TREND_COLUMNS}
     date_range = (df["period_date"].min(), df["period_date"].max()) if "period_date" in df.columns else None
@@ -172,11 +175,17 @@ def validate_churn_trend_schema(df: pd.DataFrame) -> Schema65ValidationResult:
     else:
         errors.append("Column 'period_date' is missing.")
 
-    # Churn rate and retention rate value sanity (between 0.0 and 1.0 or percent)
+    # Churn rate and retention rate value sanity (between 0.0 and 1.0)
     if "churn_rate" in df.columns:
         invalid_rates = df[(df["churn_rate"] < 0) | (df["churn_rate"] > 1.0)]["churn_rate"]
         if not invalid_rates.empty:
             errors.append(f"Found {len(invalid_rates)} churn_rate values outside [0.0, 1.0].")
+
+    # Check is_censored and is_forecast
+    for flag_col in ("is_censored", "is_forecast"):
+        if flag_col in df.columns and not pd.api.types.is_bool_dtype(df[flag_col]):
+            if not set(df[flag_col].dropna().unique()).issubset({True, False, 0, 1}):
+                errors.append(f"'{flag_col}' must be boolean or 0/1.")
 
     null_counts = {col: int(df[col].isna().sum()) for col in df.columns if col in CHURN_TREND_COLUMNS}
     date_range = (df["period_date"].min(), df["period_date"].max()) if "period_date" in df.columns else None
@@ -208,6 +217,18 @@ def validate_combined_trend_schema(df: pd.DataFrame) -> Schema65ValidationResult
             errors=errors,
             row_count=0,
         )
+
+    if "period_date" in df.columns:
+        if not pd.api.types.is_datetime64_any_dtype(df["period_date"]):
+            errors.append("'period_date' must be datetime dtype.")
+    else:
+        errors.append("Column 'period_date' is missing.")
+
+    # Check is_censored and is_forecast
+    for flag_col in ("is_censored", "is_forecast"):
+        if flag_col in df.columns and not pd.api.types.is_bool_dtype(df[flag_col]):
+            if not set(df[flag_col].dropna().unique()).issubset({True, False, 0, 1}):
+                errors.append(f"'{flag_col}' must be boolean or 0/1.")
 
     null_counts = {col: int(df[col].isna().sum()) for col in df.columns if col in COMBINED_TREND_COLUMNS}
     date_range = (df["period_date"].min(), df["period_date"].max()) if "period_date" in df.columns else None

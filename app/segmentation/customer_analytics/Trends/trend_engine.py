@@ -1,5 +1,5 @@
 """
-app/Trends/trend_engine.py
+app/segmentation/customer_analytics/Trends/trend_engine.py
 
 Core Historical Trend Analysis Engine (Person 5).
 Produces aggregated, continuous historical time-series trends for Churn and Revenue
@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 try:
-    from app.Segmentation.customer_analytics.Trends.schemas import (
+    from app.segmentation.customer_analytics.Trends.schemas import (
         CHURN_TREND_COLUMNS,
         COMBINED_TREND_COLUMNS,
         REVENUE_TREND_COLUMNS,
@@ -40,9 +40,11 @@ class HistoricalTrendEngine:
     def __init__(
         self,
         return_window_days: int = 180,
+        reference_date: Optional[Union[str, pd.Timestamp]] = "2018-10-17",
         rolling_windows: Optional[Dict[str, Dict[str, int]]] = None,
     ):
-        self.return_window_days = return_window_days
+        self.return_window_days = int(return_window_days)
+        self.reference_date = pd.Timestamp(reference_date) if reference_date else pd.Timestamp("2018-10-17")
         self.rolling_windows = rolling_windows or {
             "daily": {"short": 7, "long": 30},
             "weekly": {"short": 4, "long": 12},
@@ -171,8 +173,9 @@ class HistoricalTrendEngine:
                 0.0,
             ),
         )
-        # First period has NA/0 growth
-        resampled.iloc[0, resampled.columns.get_loc("revenue_growth_pct")] = None
+        # First period has NA/None growth
+        if len(resampled) > 0:
+            resampled.iloc[0, resampled.columns.get_loc("revenue_growth_pct")] = None
 
         # Rolling Moving Averages
         windows = self.rolling_windows.get(granularity.lower(), {"short": 7, "long": 30})
@@ -197,7 +200,7 @@ class HistoricalTrendEngine:
         # Reorder to exact Schema 6.5 contract
         result = resampled[REVENUE_TREND_COLUMNS].copy()
 
-        # Ensure float rounding for clean precision
+        # Float precision rounding
         result["total_revenue"] = result["total_revenue"].round(2)
         result["avg_order_value"] = result["avg_order_value"].round(2)
         result["avg_revenue_per_user"] = result["avg_revenue_per_user"].round(2)
@@ -209,7 +212,7 @@ class HistoricalTrendEngine:
         return result
 
     # =========================================================================
-    # Churn Trend Computation
+    # Churn Trend Computation (Issue 1, 2, 3 Fixed)
     # =========================================================================
 
     def compute_churn_trend(
@@ -217,6 +220,7 @@ class HistoricalTrendEngine:
         orders_df: pd.DataFrame,
         churn_labels_df: Optional[pd.DataFrame] = None,
         granularity: str = "daily",
+        reference_date: Optional[pd.Timestamp] = None,
         min_date: Optional[pd.Timestamp] = None,
         max_date: Optional[pd.Timestamp] = None,
     ) -> pd.DataFrame:
@@ -225,8 +229,11 @@ class HistoricalTrendEngine:
 
         Parameters:
             orders_df: Order-level DataFrame with customer IDs and timestamps.
-            churn_labels_df: Optional pre-computed churn labels DataFrame.
+            churn_labels_df: Pre-computed churn labels DataFrame containing
+                             ['customer_unique_id', 'first_order_date', 'last_order_date',
+                              'label', 'censored']. If None, computed from orders.
             granularity: 'daily', 'weekly', or 'monthly'
+            reference_date: Timestamp cutoff for churn observation.
 
         Returns:
             DataFrame adhering to Schema 6.5 (Churn Trend half).
@@ -234,85 +241,162 @@ class HistoricalTrendEngine:
         if orders_df.empty:
             empty_df = pd.DataFrame(columns=CHURN_TREND_COLUMNS)
             empty_df["period_date"] = pd.to_datetime(empty_df["period_date"])
+            empty_df["is_censored"] = empty_df["is_censored"].astype(bool)
             empty_df["is_forecast"] = empty_df["is_forecast"].astype(bool)
             return empty_df
 
-        df = orders_df.copy()
-        df["order_purchase_timestamp"] = pd.to_datetime(df["order_purchase_timestamp"])
-        df["period_date"] = self._normalize_timestamp_to_period(
-            df["order_purchase_timestamp"], granularity
+        ref_date = reference_date or self.reference_date
+
+        df_orders = orders_df.copy()
+        df_orders["order_purchase_timestamp"] = pd.to_datetime(df_orders["order_purchase_timestamp"])
+        df_orders["period_date"] = self._normalize_timestamp_to_period(
+            df_orders["order_purchase_timestamp"], granularity
         )
 
-        # 1. First order per customer (Acquisition period)
-        customer_first = df.groupby("customer_unique_id")["order_purchase_timestamp"].min().reset_index()
-        customer_first.rename(columns={"order_purchase_timestamp": "first_order_date"}, inplace=True)
-        customer_first["acquisition_period"] = self._normalize_timestamp_to_period(
-            customer_first["first_order_date"], granularity
+        # 1. Obtain or build customer churn labels dataset
+        if churn_labels_df is None or churn_labels_df.empty:
+            # Dynamically compute customer-level first/last orders and labels
+            df_orders_sorted = df_orders.sort_values(
+                ["customer_unique_id", "order_purchase_timestamp"]
+            ).reset_index(drop=True)
+            grouped_cust = df_orders_sorted.groupby("customer_unique_id")
+
+            labels = grouped_cust.agg(
+                first_order_date=("order_purchase_timestamp", "min"),
+                last_order_date=("order_purchase_timestamp", "max"),
+                num_valid_orders=("order_id", "nunique"),
+            ).reset_index()
+
+            labels["days_since_last_order"] = (
+                ref_date - labels["last_order_date"]
+            ).dt.total_seconds() / 86400.0
+
+            df_orders_sorted["prev_order_date"] = df_orders_sorted.groupby(
+                "customer_unique_id"
+            )["order_purchase_timestamp"].shift(1)
+            df_orders_sorted["gap_to_prev"] = (
+                df_orders_sorted["order_purchase_timestamp"]
+                - df_orders_sorted["prev_order_date"]
+            ).dt.total_seconds() / 86400.0
+
+            repeat_customers = set(
+                df_orders_sorted.loc[
+                    df_orders_sorted["gap_to_prev"] <= self.return_window_days,
+                    "customer_unique_id",
+                ]
+            )
+            labels["has_repeat"] = labels["customer_unique_id"].isin(repeat_customers)
+            labels["censored"] = (
+                (~labels["has_repeat"])
+                & (labels["days_since_last_order"] < self.return_window_days)
+            )
+
+            labels["label"] = pd.NA
+            labels.loc[labels["has_repeat"], "label"] = 0
+            labels.loc[
+                (~labels["has_repeat"])
+                & (labels["days_since_last_order"] >= self.return_window_days),
+                "label",
+            ] = 1
+            labels = labels.drop(columns=["has_repeat"])
+            labels["label"] = labels["label"].astype("Int64")
+        else:
+            labels = churn_labels_df.copy()
+            labels["first_order_date"] = pd.to_datetime(labels["first_order_date"])
+            labels["last_order_date"] = pd.to_datetime(labels["last_order_date"])
+
+        # 2. Acquisition Periods (New Customers)
+        labels["acquisition_period"] = self._normalize_timestamp_to_period(
+            labels["first_order_date"], granularity
+        )
+        new_per_period = (
+            labels.groupby("acquisition_period")["customer_unique_id"]
+            .nunique()
+            .rename("new_customers")
         )
 
-        # 2. Last order per customer
-        customer_last = df.groupby("customer_unique_id")["order_purchase_timestamp"].max().reset_index()
-        customer_last.rename(columns={"order_purchase_timestamp": "last_order_date"}, inplace=True)
-        # Churn timestamp: when observation window elapsed after last purchase
-        customer_last["churn_timestamp"] = customer_last["last_order_date"] + pd.Timedelta(days=self.return_window_days)
-        customer_last["churn_period"] = self._normalize_timestamp_to_period(
-            customer_last["churn_timestamp"], granularity
+        # 3. Repeat Orders per Period
+        df_orders = df_orders.merge(
+            labels[["customer_unique_id", "first_order_date"]],
+            on="customer_unique_id",
+            how="left",
         )
-
-        # 3. Merge customer acquisition and repeat order details
-        df = df.merge(customer_first[["customer_unique_id", "first_order_date"]], on="customer_unique_id", how="left")
-        df["is_repeat_order"] = df["order_purchase_timestamp"] > df["first_order_date"]
-
-        # Aggregate period-level customer counts
-        active_per_period = df.groupby("period_date")["customer_unique_id"].nunique().rename("active_customers")
-        new_per_period = customer_first.groupby("acquisition_period")["customer_unique_id"].nunique().rename("new_customers")
-        
+        df_orders["is_repeat_order"] = (
+            df_orders["order_purchase_timestamp"] > df_orders["first_order_date"]
+        )
         repeat_per_period = (
-            df[df["is_repeat_order"]]
+            df_orders[df_orders["is_repeat_order"]]
             .groupby("period_date")["customer_unique_id"]
             .nunique()
             .rename("repeat_customers")
         )
 
-        # Churned customers whose return window elapsed in this period
-        churned_per_period = customer_last.groupby("churn_period")["customer_unique_id"].nunique().rename("churned_customers")
+        # 4. Churn Events from Confirmed Churned Customers (Issue 1 Fix)
+        # Churn event date is when return_window expired after their last order
+        churned_cust = labels[labels["label"] == 1].copy()
+        if not churned_cust.empty:
+            churned_cust["churn_date"] = churned_cust["last_order_date"] + pd.Timedelta(
+                days=self.return_window_days
+            )
+            churned_cust["churn_period"] = self._normalize_timestamp_to_period(
+                churned_cust["churn_date"], granularity
+            )
+            churned_per_period = (
+                churned_cust.groupby("churn_period")["customer_unique_id"]
+                .nunique()
+                .rename("churned_customers")
+            )
+        else:
+            churned_per_period = pd.Series(dtype=int, name="churned_customers")
 
-        # Combine into time series with gap-filling
+        # 5. Continuous Timeline Index (Gap-Filling up to max date / reference date)
         freq = self._get_freq_alias(granularity)
-        start_date = min_date or df["period_date"].min()
-        end_date = max_date or df["period_date"].max()
+        start_date = min_date or min(df_orders["period_date"].min(), labels["acquisition_period"].min())
+
+        max_candidates = [df_orders["period_date"].max()]
+        if not churned_cust.empty:
+            max_candidates.append(churned_cust["churn_period"].max())
+        if ref_date is not None:
+            ref_period = self._normalize_timestamp_to_period(pd.Series([ref_date]), granularity).iloc[0]
+            max_candidates.append(ref_period)
+
+        end_date = max_date or max(max_candidates)
 
         full_index = pd.date_range(start=start_date, end=end_date, freq=freq)
         trend_df = pd.DataFrame(index=full_index)
 
-        trend_df = trend_df.join(active_per_period, how="left").fillna(0)
         trend_df = trend_df.join(new_per_period, how="left").fillna(0)
         trend_df = trend_df.join(repeat_per_period, how="left").fillna(0)
         trend_df = trend_df.join(churned_per_period, how="left").fillna(0)
 
-        trend_df["active_customers"] = trend_df["active_customers"].astype(int)
         trend_df["new_customers"] = trend_df["new_customers"].astype(int)
         trend_df["repeat_customers"] = trend_df["repeat_customers"].astype(int)
         trend_df["churned_customers"] = trend_df["churned_customers"].astype(int)
 
-        # Cumulative customer base observed up to period t
-        cum_acquired = trend_df["new_customers"].cumsum()
-        cum_churned = trend_df["churned_customers"].cumsum()
-        trend_df["cumulative_churned"] = cum_churned
+        # 6. Cumulative Metrics & Survivorship Active Base (Issue 2 & 3 Fix)
+        trend_df["cumulative_acquired"] = trend_df["new_customers"].cumsum()
+        trend_df["cumulative_churned"] = trend_df["churned_customers"].cumsum()
 
-        # Active observed customer pool for churn rate denominator
-        observed_base = cum_acquired.shift(1).fillna(trend_df["new_customers"])
-        observed_base = observed_base.clip(lower=1)
+        # Surviving customer base entering period t:
+        # cumulative acquired up to t-1 minus cumulative churned up to t-1, plus new acquisitions in t
+        surviving_prior = (
+            trend_df["cumulative_acquired"].shift(1).fillna(0)
+            - trend_df["cumulative_churned"].shift(1).fillna(0)
+        )
+        # Active customer base entering/during period t:
+        surviving_base = surviving_prior + trend_df["new_customers"]
+        trend_df["active_customers"] = surviving_base.clip(lower=0).astype(int)
 
-        # Churn rate: churned customers in period / active observed base
+        # Churn Rate using survivorship active base denominator
+        # For periods with zero active customers, churn rate is 0.0
         trend_df["churn_rate"] = np.where(
-            observed_base > 0,
-            (trend_df["churned_customers"] / observed_base).clip(0.0, 1.0),
+            trend_df["active_customers"] > 0,
+            (trend_df["churned_customers"] / trend_df["active_customers"]).clip(0.0, 1.0),
             0.0,
         )
         trend_df["retention_rate"] = (1.0 - trend_df["churn_rate"]).clip(0.0, 1.0)
 
-        # Rolling Churn Rate (smoothed)
+        # Rolling Churn Rate (smoothed moving average)
         windows = self.rolling_windows.get(granularity.lower(), {"short": 7, "long": 30})
         short_w = windows.get("short", 7)
         trend_df["rolling_churn_rate"] = (
@@ -321,8 +405,18 @@ class HistoricalTrendEngine:
 
         trend_df = trend_df.reset_index().rename(columns={"index": "period_date"})
         trend_df["granularity"] = granularity.lower()
+
+        # 7. Right-Censoring Flag (Issue 1 Fix)
+        # Periods whose return window extends beyond reference_date have incomplete churn observation
+        if ref_date is not None:
+            censoring_threshold_date = ref_date - pd.Timedelta(days=self.return_window_days)
+            trend_df["is_censored"] = trend_df["period_date"] > censoring_threshold_date
+        else:
+            trend_df["is_censored"] = False
+
         trend_df["is_forecast"] = False
 
+        # Format and validate Schema 6.5 contract
         result = trend_df[CHURN_TREND_COLUMNS].copy()
         result["churn_rate"] = result["churn_rate"].round(4)
         result["retention_rate"] = result["retention_rate"].round(4)
@@ -345,39 +439,69 @@ class HistoricalTrendEngine:
         if revenue_trend_df.empty and churn_trend_df.empty:
             empty_df = pd.DataFrame(columns=COMBINED_TREND_COLUMNS)
             empty_df["period_date"] = pd.to_datetime(empty_df["period_date"])
+            empty_df["is_censored"] = empty_df["is_censored"].astype(bool)
             empty_df["is_forecast"] = empty_df["is_forecast"].astype(bool)
             return empty_df
 
+        if revenue_trend_df.empty:
+            merged = churn_trend_df.copy()
+            for col in COMBINED_TREND_COLUMNS:
+                if col not in merged.columns:
+                    merged[col] = 0.0
+            return merged[COMBINED_TREND_COLUMNS].copy()
+
+        if churn_trend_df.empty:
+            merged = revenue_trend_df.copy()
+            for col in COMBINED_TREND_COLUMNS:
+                if col not in merged.columns:
+                    merged[col] = False if col in ("is_censored", "is_forecast") else 0.0
+            return merged[COMBINED_TREND_COLUMNS].copy()
+
+        churn_cols = [
+            "granularity",
+            "period_date",
+            "active_customers",
+            "new_customers",
+            "repeat_customers",
+            "churned_customers",
+            "churn_rate",
+            "retention_rate",
+            "rolling_churn_rate",
+            "is_censored",
+        ]
+
         merged = pd.merge(
             revenue_trend_df,
-            churn_trend_df[
-                [
-                    "granularity",
-                    "period_date",
-                    "active_customers",
-                    "new_customers",
-                    "repeat_customers",
-                    "churned_customers",
-                    "churn_rate",
-                    "retention_rate",
-                    "rolling_churn_rate",
-                ]
-            ],
+            churn_trend_df[[c for c in churn_cols if c in churn_trend_df.columns]],
             on=["granularity", "period_date"],
             how="outer",
         )
 
         merged["is_forecast"] = False
+        if "is_censored" not in merged.columns:
+            merged["is_censored"] = False
+        else:
+            merged["is_censored"] = merged["is_censored"].fillna(False).astype(bool)
+
         merged = merged.sort_values(["granularity", "period_date"]).reset_index(drop=True)
 
         for col in COMBINED_TREND_COLUMNS:
             if col not in merged.columns:
                 merged[col] = 0.0
+            else:
+                if col in ("is_censored", "is_forecast"):
+                    merged[col] = merged[col].fillna(False).astype(bool)
+                elif col in ("granularity", "period_date"):
+                    pass
+                elif col == "cumulative_revenue":
+                    merged[col] = merged[col].ffill().fillna(0.0)
+                else:
+                    merged[col] = merged[col].fillna(0.0)
 
         return merged[COMBINED_TREND_COLUMNS].copy()
 
     # =========================================================================
-    # All-In-One Trend Pipeline Builder
+    # All-In-One Trend Pipeline Builder (Issue 4 Validation Enforcement)
     # =========================================================================
 
     def generate_all_trends(
@@ -385,40 +509,89 @@ class HistoricalTrendEngine:
         orders_df: pd.DataFrame,
         churn_labels_df: Optional[pd.DataFrame] = None,
         granularities: Optional[List[str]] = None,
-    ) -> Dict[str, Dict[str, pd.DataFrame]]:
+        reference_date: Optional[pd.Timestamp] = None,
+        raise_on_validation_error: bool = True,
+    ) -> Dict[str, Dict[str, Union[pd.DataFrame, dict]]]:
         """
         Generate Daily, Weekly, and Monthly trends for both Revenue and Churn.
+        Enforces Schema 6.5 validation and surfaces errors.
         """
+        ref_date = reference_date or self.reference_date
         grans = granularities or list(self.SUPPORTED_GRANULARITIES)
-        results: Dict[str, Dict[str, pd.DataFrame]] = {}
+        results: Dict[str, Dict[str, Union[pd.DataFrame, dict]]] = {}
 
         all_rev_list = []
         all_churn_list = []
         all_master_list = []
+        validation_reports = {}
 
         for gran in grans:
             rev_df = self.compute_revenue_trend(orders_df, granularity=gran)
-            churn_df = self.compute_churn_trend(orders_df, churn_labels_df, granularity=gran)
+            churn_df = self.compute_churn_trend(
+                orders_df,
+                churn_labels_df=churn_labels_df,
+                granularity=gran,
+                reference_date=ref_date,
+            )
             combined_df = self.build_combined_trend(rev_df, churn_df)
 
-            validate_revenue_trend_schema(rev_df)
-            validate_churn_trend_schema(churn_df)
-            validate_combined_trend_schema(combined_df)
+            # Strict Schema 6.5 Validations (Issue 4 Fix)
+            val_rev = validate_revenue_trend_schema(rev_df)
+            val_churn = validate_churn_trend_schema(churn_df)
+            val_comb = validate_combined_trend_schema(combined_df)
+
+            gran_errors = []
+            if not val_rev.is_valid:
+                gran_errors.append(f"Revenue Trend ({gran}): {val_rev.errors}")
+            if not val_churn.is_valid:
+                gran_errors.append(f"Churn Trend ({gran}): {val_churn.errors}")
+            if not val_comb.is_valid:
+                gran_errors.append(f"Combined Trend ({gran}): {val_comb.errors}")
+
+            if gran_errors and raise_on_validation_error:
+                raise ValueError(
+                    f"Schema 6.5 validation failure on granularity '{gran}':\n"
+                    + "\n".join(gran_errors)
+                )
+
+            validation_reports[gran] = {
+                "revenue": {
+                    "is_valid": val_rev.is_valid,
+                    "errors": val_rev.errors,
+                    "row_count": val_rev.row_count,
+                },
+                "churn": {
+                    "is_valid": val_churn.is_valid,
+                    "errors": val_churn.errors,
+                    "row_count": val_churn.row_count,
+                },
+                "combined": {
+                    "is_valid": val_comb.is_valid,
+                    "errors": val_comb.errors,
+                    "row_count": val_comb.row_count,
+                },
+            }
 
             results[gran] = {
                 "revenue": rev_df,
                 "churn": churn_df,
                 "combined": combined_df,
+                "validation": validation_reports[gran],
             }
 
             all_rev_list.append(rev_df)
             all_churn_list.append(churn_df)
             all_master_list.append(combined_df)
 
+        master_rev = pd.concat(all_rev_list, ignore_index=True) if all_rev_list else pd.DataFrame()
+        master_churn = pd.concat(all_churn_list, ignore_index=True) if all_churn_list else pd.DataFrame()
+        master_comb = pd.concat(all_master_list, ignore_index=True) if all_master_list else pd.DataFrame()
+
         results["all_granularities_combined"] = {
-            "revenue": pd.concat(all_rev_list, ignore_index=True) if all_rev_list else pd.DataFrame(),
-            "churn": pd.concat(all_churn_list, ignore_index=True) if all_churn_list else pd.DataFrame(),
-            "master": pd.concat(all_master_list, ignore_index=True) if all_master_list else pd.DataFrame(),
+            "revenue": master_rev,
+            "churn": master_churn,
+            "master": master_comb,
+            "validation": validation_reports,
         }
 
         return results
