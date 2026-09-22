@@ -23,6 +23,9 @@ OUTPUT_COLUMNS = [
     "relative_month",
     "retention_rate (%)",
     "repeat_purchase_rate (%)",
+    "cumulative_repeat_purchase_rate (%)",
+    "churn_rate (%)",
+    "monthly_churn_rate (%)",
     "average_clv",
     "generated_date",
 ]
@@ -65,6 +68,7 @@ def build_scoped_input(
     customers: pd.DataFrame,
     orders: pd.DataFrame,
     payments: pd.DataFrame,
+    churn_labels: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Merge raw tables at one row per customer-order.
 
@@ -110,16 +114,29 @@ def build_scoped_input(
     merged["total_orders"] = merged.groupby("customer_unique_id")[
         "order_id"
     ].transform("nunique").astype("int64")
+    if churn_labels is not None:
+        _require_columns(
+            churn_labels,
+            {"customer_unique_id", "label", "censored"},
+            "customer_churn_labels",
+        )
+        labels = churn_labels[
+            ["customer_unique_id", "label", "censored"]
+        ].drop_duplicates("customer_unique_id")
+        merged = merged.merge(labels, on="customer_unique_id", how="left")
 
-    result = merged[
-        [
-            "customer_unique_id",
-            "first_purchase_date",
-            "order_purchase_timestamp",
-            "payment_value",
-            "total_orders",
-        ]
-    ].sort_values(["customer_unique_id", "order_purchase_timestamp"])
+    result_columns = [
+        "customer_unique_id",
+        "first_purchase_date",
+        "order_purchase_timestamp",
+        "payment_value",
+        "total_orders",
+    ]
+    if churn_labels is not None:
+        result_columns.extend(["label", "censored"])
+    result = merged[result_columns].sort_values(
+        ["customer_unique_id", "order_purchase_timestamp"]
+    )
     return result.reset_index(drop=True)
 
 
@@ -144,6 +161,11 @@ def load_scoped_input(
         payments = pd.read_sql(
             "SELECT order_id, payment_value FROM order_payments", connection
         )
+        churn_labels = pd.read_sql(
+            "SELECT customer_unique_id, label, censored "
+            "FROM customer_churn_labels",
+            connection,
+        )
     else:
         if data_dir is None:
             raise ValueError("Provide data_dir or a database connection.")
@@ -157,20 +179,31 @@ def load_scoped_input(
         customers = pd.read_csv(paths["customers"])
         orders = pd.read_csv(paths["orders"])
         payments = pd.read_csv(paths["payments"])
-    return build_scoped_input(customers, orders, payments)
+        churn_labels = None
+    return build_scoped_input(customers, orders, payments, churn_labels)
 
 
 def calculate_cohort_analysis(
     scoped_input: pd.DataFrame,
     *,
     min_orders: int = 1,
+    exclude_censored: bool = True,
     generated_date: date | str | None = None,
 ) -> pd.DataFrame:
-    """Calculate retention, repeat purchase rate, and average cohort CLV.
+    """Calculate cohort retention, repeat purchase, churn, and cumulative CLV.
 
     ``min_orders`` is deliberately local to this module.  The default keeps
     every valid purchaser (including one-time customers), while callers can
     require repeat-capable customers without altering other model datasets.
+
+    ``churn_rate (%)`` is the final project-label rate for the cohort.
+    ``monthly_churn_rate (%)`` assigns a labeled customer's churn event to
+    the calendar month when the canonical inactivity window expires, divided
+    by customers still at risk at the start of that month.
+
+    ``repeat_purchase_rate (%)`` counts second purchases occurring in the
+    current relative month. ``cumulative_repeat_purchase_rate (%)`` counts
+    customers whose second purchase occurred by the current relative month.
     """
     if min_orders < 1:
         raise ValueError("min_orders must be at least 1")
@@ -194,6 +227,8 @@ def calculate_cohort_analysis(
         ]
     )
     frame = frame[frame["total_orders"].fillna(0).astype(int) >= min_orders]
+    if exclude_censored and "censored" in frame:
+        frame = frame[~frame["censored"].fillna(False).astype(bool)]
     if frame.empty:
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
 
@@ -206,13 +241,38 @@ def calculate_cohort_analysis(
     )
     frame = frame[frame["relative_month"] >= 0]
     cohort_sizes = frame.groupby("cohort_month")["customer_unique_id"].nunique()
-    customer_summary = frame.groupby("customer_unique_id").agg(
+    customer_summary = frame.sort_values("order_purchase_timestamp").groupby(
+        "customer_unique_id"
+    ).agg(
         cohort_month=("cohort_month", "first"),
         purchase_count=("order_purchase_timestamp", "size"),
+        second_purchase_month=("activity_month", lambda months: (
+            months.iloc[1] if len(months) >= 2 else pd.NaT
+        )),
     )
-    repeaters = customer_summary.assign(
-        is_repeater=customer_summary["purchase_count"].ge(2)
-    ).groupby("cohort_month")["is_repeater"].sum()
+    if {"label", "censored"}.issubset(frame.columns):
+        customer_labels = frame[
+            ["customer_unique_id", "cohort_month", "label", "censored"]
+        ].drop_duplicates("customer_unique_id").copy()
+        customer_labels["label"] = pd.to_numeric(
+            customer_labels["label"], errors="coerce"
+        )
+        customer_labels["censored"] = customer_labels["censored"].fillna(
+            False
+        ).astype(bool)
+        eligible_labels = customer_labels[
+            customer_labels["label"].notna() & ~customer_labels["censored"]
+        ]
+        eligible_sizes = eligible_labels.groupby("cohort_month")[
+            "customer_unique_id"
+        ].nunique()
+        churned = eligible_labels.groupby("cohort_month")["label"].agg(
+            lambda values: values.eq(1).sum()
+        )
+        churn_rate = churned.div(eligible_sizes).mul(100)
+    else:
+        customer_labels = pd.DataFrame()
+        churn_rate = pd.Series(dtype="float64")
     max_month = frame["activity_month"].max()
     rows: list[dict[str, object]] = []
     for cohort_month, cohort_frame in frame.groupby("cohort_month", sort=True):
@@ -220,12 +280,98 @@ def calculate_cohort_analysis(
             max_month.month - cohort_month.month
         )
         cohort_size = int(cohort_sizes[cohort_month])
-        average_clv = cohort_frame["payment_value"].sum() / cohort_size
+        revenue_by_month = (
+            cohort_frame.groupby("relative_month")["payment_value"]
+            .sum()
+            .reindex(range(last_relative_month + 1), fill_value=0.0)
+        )
+        cumulative_revenue = revenue_by_month.cumsum()
         active = cohort_frame.groupby("relative_month")[
             "customer_unique_id"
         ].nunique()
-        repeated_count = int(repeaters.get(cohort_month, 0))
+        second_purchase_months = customer_summary.loc[
+            customer_summary["cohort_month"] == cohort_month,
+            "second_purchase_month",
+        ]
+        if not customer_labels.empty:
+            cohort_labels = customer_labels[
+                (customer_labels["cohort_month"] == cohort_month)
+                & customer_labels["label"].notna()
+                & ~customer_labels["censored"]
+            ].copy()
+            last_activity = (
+                frame[frame["cohort_month"] == cohort_month]
+                .groupby("customer_unique_id")["activity_month"]
+                .max()
+            )
+            cohort_labels["last_activity_month"] = cohort_labels[
+                "customer_unique_id"
+            ].map(last_activity)
+            last_activity_dates = (
+                frame[frame["cohort_month"] == cohort_month]
+                .groupby("customer_unique_id")[
+                    "order_purchase_timestamp"
+                ]
+                .max()
+            )
+            cohort_labels["last_activity_date"] = cohort_labels[
+                "customer_unique_id"
+            ].map(last_activity_dates)
+            cohort_labels["churn_event_month"] = (
+                cohort_labels["last_activity_date"]
+                + pd.Timedelta(days=180)
+            ).dt.to_period("M")
+            cohort_labels["churn_event_relative_month"] = (
+                (
+                    cohort_labels["churn_event_month"].dt.year
+                    - cohort_month.year
+                )
+                * 12
+                + cohort_labels["churn_event_month"].dt.month
+                - cohort_month.month
+            )
+            cohort_labels.loc[
+                cohort_labels["label"] != 1,
+                "churn_event_relative_month",
+            ] = pd.NA
+            monthly_events = cohort_labels.groupby(
+                "churn_event_relative_month", dropna=True
+            )["customer_unique_id"].nunique()
+            at_risk = cohort_labels["customer_unique_id"].nunique()
+            if not monthly_events.empty:
+                last_relative_month = max(
+                    last_relative_month, int(monthly_events.index.max())
+                )
+                revenue_by_month = revenue_by_month.reindex(
+                    range(last_relative_month + 1), fill_value=0.0
+                )
+                cumulative_revenue = revenue_by_month.cumsum()
+        else:
+            monthly_events = pd.Series(dtype="float64")
+            at_risk = 0
         for relative_month in range(last_relative_month + 1):
+            second_purchase_relative_month = (
+                (
+                    second_purchase_months.dt.year
+                    - cohort_month.year
+                )
+                * 12
+                + second_purchase_months.dt.month
+                - cohort_month.month
+            )
+            repeaters_this_month = (
+                second_purchase_months.notna()
+                & second_purchase_relative_month.eq(relative_month)
+            ).sum()
+            repeaters_by_month = (
+                second_purchase_months.notna()
+                & second_purchase_relative_month.le(relative_month)
+            ).sum()
+            events = int(monthly_events.get(relative_month, 0))
+            monthly_churn_rate = (
+                events / at_risk * 100 if at_risk else float("nan")
+            )
+            at_risk -= events
             rows.append(
                 {
                     "cohort": cohort_month.strftime("%b %Y"),
@@ -234,9 +380,22 @@ def calculate_cohort_analysis(
                         float(active.get(relative_month, 0)) / cohort_size * 100, 2
                     ),
                     "repeat_purchase_rate (%)": round(
-                        repeated_count / cohort_size * 100, 2
+                        float(repeaters_this_month) / cohort_size * 100, 2
                     ),
-                    "average_clv": round(average_clv, 2),
+                    "cumulative_repeat_purchase_rate (%)": round(
+                        float(repeaters_by_month) / cohort_size * 100, 2
+                    ),
+                    "churn_rate (%)": (
+                        round(float(churn_rate.get(cohort_month, float("nan"))), 2)
+                        if cohort_month in churn_rate
+                        else float("nan")
+                    ),
+                    "monthly_churn_rate (%)": round(monthly_churn_rate, 2),
+                    "average_clv": round(
+                        float(cumulative_revenue.get(relative_month, 0.0))
+                        / cohort_size,
+                        2,
+                    ),
                     "generated_date": (
                         pd.Timestamp(generated_date).date()
                         if generated_date is not None

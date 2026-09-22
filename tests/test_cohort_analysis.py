@@ -104,7 +104,9 @@ def test_cohort_metrics_are_relative_and_include_m0_through_m3():
     assert jan.loc["M0", "retention_rate (%)"] == 100.0
     assert jan.loc["M1", "retention_rate (%)"] == 0.0
     assert jan.loc["M2", "retention_rate (%)"] == 50.0
+    assert jan.loc["M0", "average_clv"] == 15.0
     assert jan.loc["M2", "average_clv"] == 30.0
+    assert jan.loc["M0", "repeat_purchase_rate (%)"] == 0.0
     assert jan.loc["M2", "repeat_purchase_rate (%)"] == 50.0
 
     feb = result[result["cohort"] == "Feb 2017"].set_index("relative_month")
@@ -115,6 +117,9 @@ def test_cohort_metrics_are_relative_and_include_m0_through_m3():
         "relative_month",
         "retention_rate (%)",
         "repeat_purchase_rate (%)",
+        "cumulative_repeat_purchase_rate (%)",
+        "churn_rate (%)",
+        "monthly_churn_rate (%)",
         "average_clv",
         "generated_date",
     ]
@@ -139,9 +144,162 @@ def test_cohort_metrics_follow_specified_clv_and_repeat_formulas():
     result = calculate_cohort_analysis(scoped, generated_date="2018-01-01")
 
     jan = result[result["cohort"] == "Jan 2017"]
-    assert jan["average_clv"].eq(87.5).all()
-    assert jan["repeat_purchase_rate (%)"].eq(50.0).all()
+    assert jan.set_index("relative_month")["average_clv"].to_dict() == {
+        "M0": 62.5,
+        "M1": 87.5,
+    }
+    assert jan.set_index("relative_month")["repeat_purchase_rate (%)"].to_dict() == {
+        "M0": 0.0,
+        "M1": 50.0,
+    }
+    assert jan.set_index("relative_month")[
+        "cumulative_repeat_purchase_rate (%)"
+    ].to_dict() == {"M0": 0.0, "M1": 50.0}
     assert jan.set_index("relative_month").loc["M1", "retention_rate (%)"] == 50.0
+
+
+def test_average_clv_carries_forward_when_a_month_has_no_revenue():
+    scoped = pd.DataFrame(
+        {
+            "customer_unique_id": ["a", "a", "b"],
+            "first_purchase_date": pd.to_datetime(
+                ["2017-01-01", "2017-01-01", "2017-01-02"]
+            ),
+            "order_purchase_timestamp": pd.to_datetime(
+                ["2017-01-01", "2017-03-01", "2017-04-01"]
+            ),
+            "payment_value": [100, 50, 25],
+            "total_orders": [2, 2, 1],
+        }
+    )
+
+    result = calculate_cohort_analysis(scoped, generated_date="2018-01-01")
+    jan = result[result["cohort"] == "Jan 2017"].set_index("relative_month")
+
+    assert jan.loc["M0", "average_clv"] == 50.0
+    assert jan.loc["M1", "average_clv"] == 50.0
+    assert jan.loc["M2", "average_clv"] == 75.0
+
+
+def test_cohort_churn_rate_uses_project_labels_and_excludes_censored_customers():
+    scoped = pd.DataFrame(
+        {
+            "customer_unique_id": ["churned", "retained", "censored"],
+            "first_purchase_date": pd.to_datetime(
+                ["2017-01-01", "2017-01-02", "2017-01-03"]
+            ),
+            "order_purchase_timestamp": pd.to_datetime(
+                ["2017-01-01", "2017-01-02", "2017-01-03"]
+            ),
+            "payment_value": [10, 20, 30],
+            "total_orders": [1, 1, 1],
+            "label": [1, 0, 1],
+            "censored": [False, False, True],
+        }
+    )
+
+    result = calculate_cohort_analysis(scoped, generated_date="2018-01-01")
+
+    jan = result[result["cohort"] == "Jan 2017"]
+    assert jan["churn_rate (%)"].eq(50.0).all()
+    assert jan["average_clv"].eq(15.0).all()
+
+
+def test_churn_rate_excludes_censored_customers_even_when_retention_keeps_them():
+    scoped = pd.DataFrame(
+        {
+            "customer_unique_id": ["churned", "retained", "censored"],
+            "first_purchase_date": pd.to_datetime(
+                ["2017-01-01", "2017-01-02", "2017-01-03"]
+            ),
+            "order_purchase_timestamp": pd.to_datetime(
+                ["2017-01-01", "2017-01-02", "2017-01-03"]
+            ),
+            "payment_value": [10, 20, 30],
+            "total_orders": [1, 1, 1],
+            "label": [1, 0, 1],
+            "censored": [False, False, True],
+        }
+    )
+
+    result = calculate_cohort_analysis(
+        scoped, exclude_censored=False, generated_date="2018-01-01"
+    )
+
+    assert result["churn_rate (%)"].eq(50.0).all()
+
+
+def test_monthly_churn_rate_uses_canonical_180_day_inactivity_window():
+    scoped = pd.DataFrame(
+        {
+            "customer_unique_id": [
+                "early",
+                "early",
+                "late",
+                "late",
+                "retained",
+                "retained",
+            ],
+            "first_purchase_date": pd.to_datetime(
+                [
+                    "2017-01-01",
+                    "2017-01-01",
+                    "2017-01-02",
+                    "2017-01-02",
+                    "2017-01-03",
+                    "2017-01-03",
+                ]
+            ),
+            "order_purchase_timestamp": pd.to_datetime(
+                [
+                    "2017-01-01",
+                    "2017-01-31",
+                    "2017-01-02",
+                    "2017-02-15",
+                    "2017-01-03",
+                    "2017-03-03",
+                ]
+            ),
+            "payment_value": [10, 5, 10, 5, 10, 5],
+            "total_orders": [2, 2, 1, 1, 2, 2],
+            "label": [1, 1, 1, 1, 0, 0],
+            "censored": [False, False, False, False, False, False],
+        }
+    )
+
+    result = calculate_cohort_analysis(scoped, generated_date="2018-01-01")
+    jan = result[result["cohort"] == "Jan 2017"].set_index("relative_month")
+
+    assert jan.loc["M0", "monthly_churn_rate (%)"] == 0.0
+    assert jan.loc["M6", "monthly_churn_rate (%)"] == 33.33
+    assert jan.loc["M7", "monthly_churn_rate (%)"] == 50.0
+    assert jan["churn_rate (%)"].eq(66.67).all()
+
+
+def test_scoped_input_preserves_joined_churn_labels():
+    customers = pd.DataFrame(
+        {"customer_id": ["c1"], "customer_unique_id": ["person-1"]}
+    )
+    orders = pd.DataFrame(
+        {
+            "order_id": ["o1"],
+            "customer_id": ["c1"],
+            "order_purchase_timestamp": ["2017-01-01"],
+        }
+    )
+    payments = pd.DataFrame({"order_id": ["o1"], "payment_value": [10]})
+    churn_labels = pd.DataFrame(
+        {
+            "customer_unique_id": ["person-1"],
+            "label": [1],
+            "censored": [False],
+        }
+    )
+
+    result = build_scoped_input(customers, orders, payments, churn_labels)
+
+    assert result.loc[0, "label"] == 1
+    assert result.loc[0, "censored"] == False
 
 
 def test_invalid_order_threshold_and_empty_eligible_input():
@@ -165,6 +323,9 @@ def test_invalid_order_threshold_and_empty_eligible_input():
         "relative_month",
         "retention_rate (%)",
         "repeat_purchase_rate (%)",
+        "cumulative_repeat_purchase_rate (%)",
+        "churn_rate (%)",
+        "monthly_churn_rate (%)",
         "average_clv",
         "generated_date",
     ]
@@ -205,7 +366,7 @@ def test_min_orders_is_local_to_cohort_output():
     result = calculate_cohort_analysis(scoped, min_orders=2)
 
     assert set(result["cohort"]) == {"Jan 2017"}
-    assert result.iloc[0]["repeat_purchase_rate (%)"] == 100.0
+    assert result.iloc[0]["repeat_purchase_rate (%)"] == 0.0
 
 
 def test_load_scoped_input_reads_database_tables_and_writer_persists_result():
@@ -226,6 +387,13 @@ def test_load_scoped_input_reads_database_tables_and_writer_persists_result():
     pd.DataFrame(
         {"order_id": ["o1"], "payment_value": [42.0]}
     ).to_sql("order_payments", engine, index=False)
+    pd.DataFrame(
+        {
+            "customer_unique_id": ["person-1"],
+            "label": [0],
+            "censored": [False],
+        }
+    ).to_sql("customer_churn_labels", engine, index=False)
 
     scoped = load_scoped_input(connection=engine)
     result = calculate_cohort_analysis(scoped, generated_date="2018-01-01")
