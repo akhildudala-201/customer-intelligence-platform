@@ -104,8 +104,8 @@ def test_cohort_metrics_are_relative_and_include_m0_through_m3():
     assert jan.loc["M0", "retention_rate (%)"] == 100.0
     assert jan.loc["M1", "retention_rate (%)"] == 0.0
     assert jan.loc["M2", "retention_rate (%)"] == 50.0
-    assert jan.loc["M0", "average_clv"] == 15.0
-    assert jan.loc["M2", "average_clv"] == 30.0
+    assert jan.loc["M0", "cumulative_average_revenue"] == 15.0
+    assert jan.loc["M2", "cumulative_average_revenue"] == 30.0
     assert jan.loc["M0", "repeat_purchase_rate (%)"] == 0.0
     assert jan.loc["M2", "repeat_purchase_rate (%)"] == 50.0
 
@@ -118,9 +118,10 @@ def test_cohort_metrics_are_relative_and_include_m0_through_m3():
         "retention_rate (%)",
         "repeat_purchase_rate (%)",
         "cumulative_repeat_purchase_rate (%)",
-        "churn_rate (%)",
+        "final_churn_rate (%)",
         "monthly_churn_rate (%)",
-        "average_clv",
+        "cumulative_churn_rate (%)",
+        "cumulative_average_revenue",
         "generated_date",
     ]
     assert result["generated_date"].eq(pd.Timestamp("2018-01-01").date()).all()
@@ -144,7 +145,9 @@ def test_cohort_metrics_follow_specified_clv_and_repeat_formulas():
     result = calculate_cohort_analysis(scoped, generated_date="2018-01-01")
 
     jan = result[result["cohort"] == "Jan 2017"]
-    assert jan.set_index("relative_month")["average_clv"].to_dict() == {
+    assert jan.set_index("relative_month")[
+        "cumulative_average_revenue"
+    ].to_dict() == {
         "M0": 62.5,
         "M1": 87.5,
     }
@@ -158,7 +161,7 @@ def test_cohort_metrics_follow_specified_clv_and_repeat_formulas():
     assert jan.set_index("relative_month").loc["M1", "retention_rate (%)"] == 50.0
 
 
-def test_average_clv_carries_forward_when_a_month_has_no_revenue():
+def test_cumulative_average_revenue_carries_forward_when_month_has_no_revenue():
     scoped = pd.DataFrame(
         {
             "customer_unique_id": ["a", "a", "b"],
@@ -176,9 +179,9 @@ def test_average_clv_carries_forward_when_a_month_has_no_revenue():
     result = calculate_cohort_analysis(scoped, generated_date="2018-01-01")
     jan = result[result["cohort"] == "Jan 2017"].set_index("relative_month")
 
-    assert jan.loc["M0", "average_clv"] == 50.0
-    assert jan.loc["M1", "average_clv"] == 50.0
-    assert jan.loc["M2", "average_clv"] == 75.0
+    assert jan.loc["M0", "cumulative_average_revenue"] == 50.0
+    assert jan.loc["M1", "cumulative_average_revenue"] == 50.0
+    assert jan.loc["M2", "cumulative_average_revenue"] == 75.0
 
 
 def test_cohort_churn_rate_uses_project_labels_and_excludes_censored_customers():
@@ -201,8 +204,8 @@ def test_cohort_churn_rate_uses_project_labels_and_excludes_censored_customers()
     result = calculate_cohort_analysis(scoped, generated_date="2018-01-01")
 
     jan = result[result["cohort"] == "Jan 2017"]
-    assert jan["churn_rate (%)"].eq(50.0).all()
-    assert jan["average_clv"].eq(15.0).all()
+    assert jan["final_churn_rate (%)"].eq(50.0).all()
+    assert jan["cumulative_average_revenue"].eq(15.0).all()
 
 
 def test_churn_rate_excludes_censored_customers_even_when_retention_keeps_them():
@@ -226,7 +229,7 @@ def test_churn_rate_excludes_censored_customers_even_when_retention_keeps_them()
         scoped, exclude_censored=False, generated_date="2018-01-01"
     )
 
-    assert result["churn_rate (%)"].eq(50.0).all()
+    assert result["final_churn_rate (%)"].eq(50.0).all()
 
 
 def test_monthly_churn_rate_uses_canonical_180_day_inactivity_window():
@@ -273,7 +276,9 @@ def test_monthly_churn_rate_uses_canonical_180_day_inactivity_window():
     assert jan.loc["M0", "monthly_churn_rate (%)"] == 0.0
     assert jan.loc["M6", "monthly_churn_rate (%)"] == 33.33
     assert jan.loc["M7", "monthly_churn_rate (%)"] == 50.0
-    assert jan["churn_rate (%)"].eq(66.67).all()
+    assert jan.loc["M6", "cumulative_churn_rate (%)"] == 33.33
+    assert jan.loc["M7", "cumulative_churn_rate (%)"] == 66.67
+    assert jan["final_churn_rate (%)"].eq(66.67).all()
 
 
 def test_scoped_input_preserves_joined_churn_labels():
@@ -324,9 +329,10 @@ def test_invalid_order_threshold_and_empty_eligible_input():
         "retention_rate (%)",
         "repeat_purchase_rate (%)",
         "cumulative_repeat_purchase_rate (%)",
-        "churn_rate (%)",
+        "final_churn_rate (%)",
         "monthly_churn_rate (%)",
-        "average_clv",
+        "cumulative_churn_rate (%)",
+        "cumulative_average_revenue",
         "generated_date",
     ]
 
@@ -345,7 +351,7 @@ def test_invalid_dates_are_excluded_from_cohort_output():
     result = calculate_cohort_analysis(scoped, generated_date="2018-01-01")
 
     assert set(result["cohort"]) == {"Jan 2017"}
-    assert result["average_clv"].eq(10.0).all()
+    assert result["cumulative_average_revenue"].eq(10.0).all()
 
 
 def test_min_orders_is_local_to_cohort_output():

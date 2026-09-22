@@ -24,9 +24,10 @@ OUTPUT_COLUMNS = [
     "retention_rate (%)",
     "repeat_purchase_rate (%)",
     "cumulative_repeat_purchase_rate (%)",
-    "churn_rate (%)",
+    "final_churn_rate (%)",
     "monthly_churn_rate (%)",
-    "average_clv",
+    "cumulative_churn_rate (%)",
+    "cumulative_average_revenue",
     "generated_date",
 ]
 CSV_FILES = {
@@ -196,10 +197,12 @@ def calculate_cohort_analysis(
     every valid purchaser (including one-time customers), while callers can
     require repeat-capable customers without altering other model datasets.
 
-    ``churn_rate (%)`` is the final project-label rate for the cohort.
+    ``final_churn_rate (%)`` is the final project-label rate for the cohort.
     ``monthly_churn_rate (%)`` assigns a labeled customer's churn event to
     the calendar month when the canonical inactivity window expires, divided
     by customers still at risk at the start of that month.
+    ``cumulative_churn_rate (%)`` divides churn events through the current
+    month by the initial eligible at-risk population.
 
     ``repeat_purchase_rate (%)`` counts second purchases occurring in the
     current relative month. ``cumulative_repeat_purchase_rate (%)`` counts
@@ -349,6 +352,8 @@ def calculate_cohort_analysis(
         else:
             monthly_events = pd.Series(dtype="float64")
             at_risk = 0
+        initial_at_risk = at_risk
+        cumulative_churn_events = 0
         for relative_month in range(last_relative_month + 1):
             second_purchase_relative_month = (
                 (
@@ -368,10 +373,16 @@ def calculate_cohort_analysis(
                 & second_purchase_relative_month.le(relative_month)
             ).sum()
             events = int(monthly_events.get(relative_month, 0))
+            cumulative_churn_events += events
             monthly_churn_rate = (
                 events / at_risk * 100 if at_risk else float("nan")
             )
             at_risk -= events
+            cumulative_churn_rate = (
+                cumulative_churn_events / initial_at_risk * 100
+                if initial_at_risk
+                else float("nan")
+            )
             rows.append(
                 {
                     "cohort": cohort_month.strftime("%b %Y"),
@@ -385,13 +396,16 @@ def calculate_cohort_analysis(
                     "cumulative_repeat_purchase_rate (%)": round(
                         float(repeaters_by_month) / cohort_size * 100, 2
                     ),
-                    "churn_rate (%)": (
+                    "final_churn_rate (%)": (
                         round(float(churn_rate.get(cohort_month, float("nan"))), 2)
                         if cohort_month in churn_rate
                         else float("nan")
                     ),
                     "monthly_churn_rate (%)": round(monthly_churn_rate, 2),
-                    "average_clv": round(
+                    "cumulative_churn_rate (%)": round(
+                        cumulative_churn_rate, 2
+                    ),
+                    "cumulative_average_revenue": round(
                         float(cumulative_revenue.get(relative_month, 0.0))
                         / cohort_size,
                         2,

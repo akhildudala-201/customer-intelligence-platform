@@ -443,12 +443,13 @@ is not the normal production input path.
 
 The output contains `cohort`, `relative_month` (`M0`, `M1`, ...),
 `retention_rate (%)`, `repeat_purchase_rate (%)`,
-`cumulative_repeat_purchase_rate (%)`, `average_clv`, and
-`churn_rate (%)`, `monthly_churn_rate (%)`, and `generated_date`.
+`cumulative_repeat_purchase_rate (%)`, `cumulative_average_revenue`,
+`final_churn_rate (%)`, `monthly_churn_rate (%)`,
+`cumulative_churn_rate (%)`, and `generated_date`.
 `repeat_purchase_rate (%)` is the percentage of customers whose second purchase
 occurred during that exact relative month. `cumulative_repeat_purchase_rate (%)`
 is the percentage whose second purchase occurred by that relative month.
-`churn_rate (%)` is the final cohort-level rate from the project
+`final_churn_rate (%)` is the final cohort-level rate from the project
 label convention (`label=1` means churned) and the existing `censored` flag;
 censored customers are excluded from this cohort output only.
 `monthly_churn_rate (%)` estimates churn timing by assigning a labeled churned
@@ -456,9 +457,12 @@ customer's event to the calendar month when the canonical 180-day inactivity
 window expires, then dividing events by customers still at risk at the start of
 each relative month. It is a monthly hazard estimate; it is not a direct
 observed churn date.
-`average_clv` is
-the cumulative revenue generated through each relative month divided by the
-original cohort size, so it is non-decreasing over the customer lifecycle.
+`cumulative_churn_rate (%)` divides all churn events through the current
+relative month by the initial eligible at-risk population.
+`cumulative_average_revenue` is the cumulative revenue generated through each
+relative month divided by the original cohort size, so it is non-decreasing
+over the customer lifecycle. It is realized revenue per acquired customer,
+not a predicted lifetime value.
 
 The default local eligibility rule is `min_orders=1`: every purchaser with a
 valid purchase timestamp is retained, including one-time customers so M0 is
