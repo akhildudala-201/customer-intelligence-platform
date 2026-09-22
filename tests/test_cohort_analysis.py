@@ -1,9 +1,13 @@
 import pandas as pd
+import pytest
+from sqlalchemy import create_engine
 
 from app.segmentation.customer_analytics.cohort_analysis import (
     TABLE_NAME,
     build_scoped_input,
     calculate_cohort_analysis,
+    load_scoped_input,
+    write_cohort_analysis,
 )
 
 
@@ -45,6 +49,39 @@ def test_scoped_input_uses_unique_customer_and_sums_order_payments():
     assert result.loc[result["customer_unique_id"] == "person-1", "total_orders"].eq(2).all()
 
 
+def test_scoped_input_handles_missing_payment_rows_and_invalid_values():
+    customers = pd.DataFrame(
+        {"customer_id": ["c1"], "customer_unique_id": ["person-1"]}
+    )
+    orders = pd.DataFrame(
+        {
+            "order_id": ["o1", "o2"],
+            "customer_id": ["c1", "c1"],
+            "order_purchase_timestamp": ["2017-01-01", "2017-02-01"],
+        }
+    )
+    payments = pd.DataFrame(
+        {"order_id": ["o1", "o1"], "payment_value": ["10.5", "invalid"]}
+    )
+
+    result = build_scoped_input(customers, orders, payments)
+
+    assert result["payment_value"].tolist() == [10.5, 0.0]
+    assert result["first_purchase_date"].eq(pd.Timestamp("2017-01-01")).all()
+    assert result["total_orders"].eq(2).all()
+
+
+def test_scoped_input_rejects_missing_source_columns():
+    with pytest.raises(ValueError, match="orders is missing required column"):
+        build_scoped_input(
+            pd.DataFrame(
+                {"customer_id": ["c1"], "customer_unique_id": ["person-1"]}
+            ),
+            pd.DataFrame({"order_id": ["o1"], "customer_id": ["c1"]}),
+            pd.DataFrame({"order_id": ["o1"], "payment_value": [10]}),
+        )
+
+
 def test_cohort_metrics_are_relative_and_include_m0_through_m3():
     scoped = pd.DataFrame(
         {
@@ -73,6 +110,81 @@ def test_cohort_metrics_are_relative_and_include_m0_through_m3():
     feb = result[result["cohort"] == "Feb 2017"].set_index("relative_month")
     assert feb.loc["M0", "retention_rate (%)"] == 100.0
     assert feb.loc["M3", "retention_rate (%)"] == 50.0
+    assert list(result.columns) == [
+        "cohort",
+        "relative_month",
+        "retention_rate (%)",
+        "repeat_purchase_rate (%)",
+        "average_clv",
+        "generated_date",
+    ]
+    assert result["generated_date"].eq(pd.Timestamp("2018-01-01").date()).all()
+
+
+def test_cohort_metrics_follow_specified_clv_and_repeat_formulas():
+    scoped = pd.DataFrame(
+        {
+            "customer_unique_id": ["a", "a", "b"],
+            "first_purchase_date": pd.to_datetime(
+                ["2017-01-01", "2017-01-01", "2017-01-15"]
+            ),
+            "order_purchase_timestamp": pd.to_datetime(
+                ["2017-01-01", "2017-02-01", "2017-01-15"]
+            ),
+            "payment_value": [100, 50, 25],
+            "total_orders": [2, 2, 1],
+        }
+    )
+
+    result = calculate_cohort_analysis(scoped, generated_date="2018-01-01")
+
+    jan = result[result["cohort"] == "Jan 2017"]
+    assert jan["average_clv"].eq(87.5).all()
+    assert jan["repeat_purchase_rate (%)"].eq(50.0).all()
+    assert jan.set_index("relative_month").loc["M1", "retention_rate (%)"] == 50.0
+
+
+def test_invalid_order_threshold_and_empty_eligible_input():
+    scoped = pd.DataFrame(
+        {
+            "customer_unique_id": ["one-time"],
+            "first_purchase_date": pd.to_datetime(["2017-01-01"]),
+            "order_purchase_timestamp": pd.to_datetime(["2017-01-01"]),
+            "payment_value": [10],
+            "total_orders": [1],
+        }
+    )
+
+    with pytest.raises(ValueError, match="min_orders"):
+        calculate_cohort_analysis(scoped, min_orders=0)
+
+    result = calculate_cohort_analysis(scoped, min_orders=2)
+    assert result.empty
+    assert list(result.columns) == [
+        "cohort",
+        "relative_month",
+        "retention_rate (%)",
+        "repeat_purchase_rate (%)",
+        "average_clv",
+        "generated_date",
+    ]
+
+
+def test_invalid_dates_are_excluded_from_cohort_output():
+    scoped = pd.DataFrame(
+        {
+            "customer_unique_id": ["valid", "invalid"],
+            "first_purchase_date": ["2017-01-01", "not-a-date"],
+            "order_purchase_timestamp": ["2017-01-01", "2017-01-01"],
+            "payment_value": [10, 20],
+            "total_orders": [1, 1],
+        }
+    )
+
+    result = calculate_cohort_analysis(scoped, generated_date="2018-01-01")
+
+    assert set(result["cohort"]) == {"Jan 2017"}
+    assert result["average_clv"].eq(10.0).all()
 
 
 def test_min_orders_is_local_to_cohort_output():
@@ -94,3 +206,37 @@ def test_min_orders_is_local_to_cohort_output():
 
     assert set(result["cohort"]) == {"Jan 2017"}
     assert result.iloc[0]["repeat_purchase_rate (%)"] == 100.0
+
+
+def test_load_scoped_input_reads_database_tables_and_writer_persists_result():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    pd.DataFrame(
+        {
+            "customer_id": ["c1"],
+            "customer_unique_id": ["person-1"],
+        }
+    ).to_sql("customers", engine, index=False)
+    pd.DataFrame(
+        {
+            "order_id": ["o1"],
+            "customer_id": ["c1"],
+            "order_purchase_timestamp": ["2017-01-01"],
+        }
+    ).to_sql("orders", engine, index=False)
+    pd.DataFrame(
+        {"order_id": ["o1"], "payment_value": [42.0]}
+    ).to_sql("order_payments", engine, index=False)
+
+    scoped = load_scoped_input(connection=engine)
+    result = calculate_cohort_analysis(scoped, generated_date="2018-01-01")
+    write_cohort_analysis(result, engine)
+
+    stored = pd.read_sql_table(TABLE_NAME, engine)
+    assert len(scoped) == 1
+    pd.testing.assert_frame_equal(
+        stored.assign(
+            generated_date=pd.to_datetime(stored["generated_date"]).dt.date
+        ),
+        result,
+        check_dtype=False,
+    )
