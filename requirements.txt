@@ -16,7 +16,7 @@ imbalanced-learn==0.14.2
 # Visualization & Reporting
 matplotlib==3.11.2
 seaborn==0.13.2
-shap==0.49.1
+shap==0.50.0
 
 # API & Explainability Interface
 fastapi==0.141.1
