@@ -34,7 +34,7 @@ INPUT_TABLE = "historical_trend_combined"
 FORECAST_HORIZON = 6                           # periods ahead to forecast
 SEASONAL_PERIOD = 12                           # 12=monthly/yearly, 52=weekly, 7=daily-weekly
 TEST_HOLDOUT = 6                               # periods held out to validate accuracy
-OUTPUT_DIR = Path("forecast_outputs")          # local CSV backups written here
+OUTPUT_DIR = Path(__file__).resolve().parents[4] / "outputs" / "forecast_outputs"   # app/outputs/forecast_outputs
 
 
 def get_engine():
