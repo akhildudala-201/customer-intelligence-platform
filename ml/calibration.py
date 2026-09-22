@@ -1,26 +1,3 @@
-"""Probability calibration, calibration evaluation, and final test evaluation.
-
-This module takes an already-trained LightGBM classifier (as produced by
-Person 2's pipeline) and:
-    1. Diagnoses how well-calibrated its raw probabilities are.
-    2. Fits two calibration methods (Platt / sigmoid scaling and Isotonic
-       regression) on the VALIDATION split (never train, to avoid leakage
-       into an already-fitted model).
-    3. Picks the best calibration method by Brier score on validation.
-    4. Re-tunes the decision threshold on the calibrated validation
-       probabilities (calibration shifts the probability scale, so the
-       pre-calibration threshold is no longer valid). The METRIC used for
-       this re-tuning is read from Person 4's threshold_analysis.py output
-       (app/ml/outputs/reports/best_threshold_comparison_val.csv or
-       best_thresholds_LightGBM_val.csv) -- this module does not decide the
-       tuning objective independently, it defers to Person 4's analysis,
-       with a safe hardcoded fallback if that analysis hasn't been run yet.
-    5. Produces a final, honest TEST-set evaluation with the calibrated
-       model + new threshold.
-    6. Saves a single deployable artifact (base model + calibrator +
-       threshold) for Person 6's predict() / churn_predictions integration.
-"""
-
 import sys
 import warnings
 from datetime import datetime
