@@ -1,40 +1,9 @@
-"""
-smoke_check.py
-
-WHY THIS FILE EXISTS
----------------------
-The pytest suite (tests/) is what actually PROVES this part is correct —
-it asserts things like "probability is between 0 and 1", "missing a
-required feature raises", "SHAP values are JSON-serializable", etc. This
-script does NOT replace that: it asserts nothing and can pass its own
-eyeball-check while a real pytest test underneath it is failing.
-
-What it's for instead: a fast, visual "does the pipeline even run"
-check — load the real model, run the real SHAP explainer, run the real
-reason-code logic, on one hardcoded customer, and print what comes out,
-so you can look at it without reading pytest's dot-and-traceback output
-or wiring up a DB connection. Useful while developing, or to show
-someone the pipeline working end-to-end in under a second.
-
-WHAT IT NEEDS
--------------
-MODEL_PATH and MODEL_VERSION set (same as everything else in this
-package — see inference/predict.py). Nothing DB-related, since it uses
-a hardcoded feature row instead of data_access.
-
-RUNNING IT
-----------
-    python -m app.ml.explainibility_inference.smoke_check
-"""
-
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
 
-# Ensure the project root is on sys.path so `app.*` imports resolve
-# regardless of whether this script is invoked directly or via -m.
 _PROJECT_ROOT = str(Path(__file__).resolve().parents[4])
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -43,8 +12,7 @@ import pandas as pd
 
 from app.ml.explainibility_inference.inference.predict import ChurnPredictor
 
-# Same shape as tests/inference/conftest.py's sample_customer_df fixture —
-# a real Olist-format customer_unique_id and the model's feature contract.
+
 _SAMPLE_CUSTOMER = pd.DataFrame(
     [
         {
