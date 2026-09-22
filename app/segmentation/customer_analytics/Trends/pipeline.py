@@ -1,5 +1,5 @@
 """
-app/Trends/pipeline.py
+app/segmentation/customer_analytics/Trends/pipeline.py
 
 Pipeline Runner for Person 5 — Historical Trend Analysis (Schema 6.5).
 Executes data loading, daily/weekly/monthly revenue and churn trend aggregation,
@@ -9,6 +9,7 @@ Schema 6.5 validation, persistence to MySQL, and analytical report generation.
 import argparse
 from pathlib import Path
 import sys
+
 
 def _find_root() -> Path:
     current = Path(__file__).resolve()
@@ -57,16 +58,25 @@ def run_trend_pipeline(
     churn_df = loader.load_customer_churn_data()
     print(f"      Loaded {len(churn_df):,} customer churn records.")
 
-    # 2. Compute Trends
+    # 2. Compute Trends & Enforce Schema 6.5 Validations
     print("\n[2/4] Aggregating historical Revenue and Churn trends...")
     engine = HistoricalTrendEngine()
     grans = ["daily", "weekly", "monthly"] if granularity == "all" else [granularity]
-    trend_results = engine.generate_all_trends(orders_df, churn_df, granularities=grans)
+    trend_results = engine.generate_all_trends(
+        orders_df,
+        churn_labels_df=churn_df,
+        granularities=grans,
+        raise_on_validation_error=True,
+    )
 
     for g in grans:
         rev_count = len(trend_results[g]["revenue"])
         churn_count = len(trend_results[g]["churn"])
-        print(f"      -> {g.capitalize()} level: {rev_count} revenue periods, {churn_count} churn periods computed.")
+        censored_count = int(trend_results[g]["churn"]["is_censored"].sum())
+        print(
+            f"      -> {g.capitalize()} level: {rev_count} revenue periods, "
+            f"{churn_count} churn periods ({censored_count} right-censored tails) [Schema 6.5 VALID]"
+        )
 
     # 3. Save to MySQL
     persisted_tables = {}
