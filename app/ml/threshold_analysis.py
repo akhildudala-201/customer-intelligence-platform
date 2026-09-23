@@ -1,32 +1,4 @@
-"""
-Threshold analysis: Logistic Regression vs LightGBM (churn classification).
-FULLY SELF-CONTAINED -- no separate loader module needed.
 
-Loads your ALREADY-TRAINED artifacts -- no training happens in this script.
-
-Same fix as model_comparison.py: train_lightgbm_model.py auto-selects the
-MINORITY label as its positive class. On this Olist dataset (mostly one-time
-buyers, so churn_label=1 is the MAJORITY class), that minority label is very
-likely 0 -- meaning the raw artifact's predict_proba(X)[:, 1] returns
-P(retained), not P(churned). LoadedLightGBMModel inverts this automatically
-so every threshold in this sweep is interpreted against P(churn_label == 1),
-the same target Logistic Regression predicts.
-
-Sweeps a grid of decision thresholds on the validation set for each model,
-computes precision/recall/F1/balanced-accuracy at every threshold, plots the
-curves side by side, and reports each model's optimal threshold per metric.
-
-Usage:
-    # Defaults now resolve relative to the project root and auto-detect the
-    # newest LightGBM artifact -- so this works with no arguments at all:
-    python threshold_analysis.py
-
-    # Or override explicitly:
-    python threshold_analysis.py \
-        --logreg-path outputs/models/churn_logistic_regression.joblib \
-        --lgbm-path outputs/models/lgb_churn_model_20260917_174659.joblib \
-        --lgbm-metadata outputs/models/metadata_20260917_174659.json
-"""
 
 import argparse
 import json
