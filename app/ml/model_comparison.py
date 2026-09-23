@@ -1,39 +1,3 @@
-"""
-Model comparison: Logistic Regression vs LightGBM (churn classification).
-FULLY SELF-CONTAINED -- no separate loader module needed.
-
-Loads your ALREADY-TRAINED artifacts -- no training happens in this script.
-
-IMPORTANT FIX vs. earlier version:
-train_lightgbm_model.py auto-selects CONFIG["POSITIVE_CLASS"] as the MINORITY
-label (`y_train_raw.value_counts().idxmin()`). For this Olist dataset, most
-customers are one-time buyers, so churn_label=1 (churned) is the MAJORITY
-class -- meaning LightGBM was very likely trained with positive_class=0
-(retained customers) as its target, not positive_class=1 (churned).
-
-That means the raw artifact's `predict_proba(X)[:, 1]` returns P(retained),
-NOT P(churned) -- the opposite of what Logistic Regression predicts. If left
-uncorrected, the two models are being scored on opposite targets and their
-metrics are not comparable, no matter which one "wins."
-
-Fix: when the artifact's stored `positive_class` != 1, we invert the
-probability (`1 - raw_proba`) so LoadedLightGBMModel.predict_proba() always
-returns P(churn_label == 1) -- the same target Logistic Regression predicts.
-No label remapping is needed once probabilities are correctly oriented.
-
-Both models are then evaluated on identical val/test splits with identical
-metric functions, each threshold tuned independently on validation data, and
-the "better" model per metric is decided from the ACTUAL numbers at runtime --
-nothing here is hardcoded to make one model appear better than the other.
-
-Usage:
-    python model_comparison.py \
-        --logreg-path outputs/models/churn_logistic_regression.joblib \
-        --lgbm-path outputs/models/lgb_churn_model_20260917_174659.joblib \
-        --lgbm-metadata outputs/models/metadata_20260917_174659.json \
-        --tune-metric balanced_accuracy \
-        --log-run
-"""
 
 import argparse
 import json
