@@ -118,7 +118,7 @@ segmentation stack turns that single number — plus behavioral features and
 spend history — into three business-facing signals, then combines them into
 a recommended retention action.
 
-### Risk Tier Classification (schema 6.1)
+### Risk Tier Classification
 
 Each customer's `churn_probability` is mapped to one of three tiers using
 cutoffs defined in `app/segmentation/customer_intelligence/config/risk_tier_thresholds.yaml`
@@ -130,13 +130,10 @@ cutoffs defined in `app/segmentation/customer_intelligence/config/risk_tier_thre
 | Medium Risk | 0.40 – 0.69 |
 | High Risk | 0.70 – 1.00 |
 
-### GMM Customer Segmentation (schema 6.2)
+### GMM Customer Segmentation 
 
 A Gaussian Mixture Model clusters customers on 11 behavioral features
-(`monetary_value`, `frequency`, `recency_days`, `avg_review_score`,
-`avg_delivery_days`, `avg_delivery_delay_days`, `avg_payment_installments`,
-`freight_ratio`, `has_bad_review`, `has_review_comment`, `is_delayed_delivery`)
-— identifiers and churn probability are deliberately excluded from the
+identifiers and churn probability are deliberately excluded from the
 clustering itself. The number of clusters (k) is chosen by evaluating
 `k = 2..7` against BIC, Silhouette, and Davies-Bouldin scores together rather
 than BIC alone, plus a practical minimum-cluster-size floor. GMM only ever
@@ -162,7 +159,7 @@ percentile split by default (top third / middle third / bottom third of CLV),
 which can be overridden with fixed business cutoffs via
 `ValueTierThresholds` in `clv_calculator.py`.
 
-### Campaign Recommendation Engine (schema 6.3)
+### Campaign Recommendation Engine 
 
 The final stage looks up each customer's `(risk_tier, segment, value_tier)`
 combination against `app/segmentation/customer_intelligence/campaign_rules_reasoncodes.yaml`
@@ -172,9 +169,7 @@ outreach, while low-value segments get lighter-weight engagement rather than
 blanket discounts. Rules are edited in YAML, not code, and are validated at
 load time by `campaign_rules_loader.py`.
 
-Run the whole stack, or any stage of it individually, with `scripts/run_pipeline.py`
-(see [Running the Pipeline](#running-the-pipeline)) or via the standalone
-`-m` commands in [§6](#6-run-the-segmentation-stack-directly).
+
 
 ---
 
@@ -254,7 +249,7 @@ customer-intelligence-platform/
 │           │   ├── customer_intelligence_repository.py  # Merges features_encoded + churn_predictions
 │           │   └── campaign_input_repository.py          # Merges risk_tier + segment + CLV value_tier
 │           ├── risk_tier/
-│           │   └── classifier.py          # Schema 6.1 — churn_probability -> risk_tier
+│           │   └── classifier.py          
 │           ├── gmm/
 │           │   ├── feature_prep.py        # Selects behavioural features for clustering
 │           │   ├── model_selection.py     # BIC + Silhouette + Davies-Bouldin cluster-count selection
@@ -264,7 +259,7 @@ customer-intelligence-platform/
 │           │   └── generate_customer_intelligence_tables.py  # Orchestrates risk tier + GMM segmentation
 │           ├── campaign_engine/
 │           │   ├── campaign_rules_loader.py   # Loads & validates campaign_rules_reasoncodes.yaml
-│           │   ├── recommender.py             # Schema 6.3 — Campaign Recommendation Engine
+│           │   ├── recommender.py             Campaign Recommendation Engine
 │           │   └── pipeline/
 │           │       └── generate_campaign_recommendations_table.py
 │           ├── config/
