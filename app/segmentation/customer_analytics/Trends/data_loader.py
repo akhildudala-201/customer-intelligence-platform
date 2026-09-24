@@ -1,10 +1,4 @@
-"""
-app/segmentation/customer_analytics/Trends/data_loader.py
-
-Data Loader for Historical Trend Analysis.
-Retrieves and prepares transactional, customer, and churn datasets from either
-the MySQL Database or local CSV files with automatic fallback.
-"""
+"""Load and normalize data used by the historical trend pipeline."""
 
 import os
 from pathlib import Path

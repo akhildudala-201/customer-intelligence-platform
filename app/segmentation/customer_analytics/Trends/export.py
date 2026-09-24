@@ -1,9 +1,4 @@
-"""
-app/segmentation/customer_analytics/Trends/export.py
-
-Persistence and export module for Historical Trend Analysis (Person 5).
-Handles saving Schema 6.5 tables into MySQL and exporting JSON/CSV reports.
-"""
+"""Persist historical trend results and export analytical reports."""
 
 import json
 from pathlib import Path
@@ -146,8 +141,8 @@ class TrendExporter:
         """Construct a high-level summary of historical trend metrics with validation results."""
         summary = {
             "schema_version": "6.5",
-            "component": "Person 5 - Historical Trend Analysis",
-            "target_consumer": "Person 6 - Forecasting",
+            "component": "Historical Trend Analysis",
+            "target_consumer": "Forecasting",
             "validation_results": trend_results.get("all_granularities_combined", {}).get("validation", {}),
             "granularities": {},
         }

@@ -1,10 +1,4 @@
-"""
-app/segmentation/customer_analytics/Trends/trend_engine.py
-
-Core Historical Trend Analysis Engine (Person 5).
-Produces aggregated, continuous historical time-series trends for Churn and Revenue
-at Daily, Weekly, and Monthly levels, conforming to Schema 6.5 (trend half).
-"""
+"""Compute historical revenue and churn trends at multiple time granularities."""
 
 from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
@@ -51,10 +45,6 @@ class HistoricalTrendEngine:
             "monthly": {"short": 3, "long": 6},
         }
 
-    # =========================================================================
-    # Helper: Granularity Period Normalization & Resampling
-    # =========================================================================
-
     def _get_freq_alias(self, granularity: str) -> str:
         """Map granularity name to pandas frequency string."""
         granularity = granularity.lower()
@@ -91,10 +81,6 @@ class HistoricalTrendEngine:
             return dt_series.dt.to_period("M").dt.start_time
         else:
             raise ValueError(f"Unsupported granularity: {granularity}")
-
-    # =========================================================================
-    # Revenue Trend Computation
-    # =========================================================================
 
     def compute_revenue_trend(
         self,
@@ -210,10 +196,6 @@ class HistoricalTrendEngine:
         result["cumulative_revenue"] = result["cumulative_revenue"].round(2)
 
         return result
-
-    # =========================================================================
-    # Churn Trend Computation (Issue 1, 2, 3 Fixed)
-    # =========================================================================
 
     def compute_churn_trend(
         self,
@@ -331,7 +313,7 @@ class HistoricalTrendEngine:
             .rename("repeat_customers")
         )
 
-        # 4. Churn Events from Confirmed Churned Customers (Issue 1 Fix)
+        # Churn events occur when the return window expires.
         # Churn event date is when return_window expired after their last order
         churned_cust = labels[labels["label"] == 1].copy()
         if not churned_cust.empty:
@@ -373,7 +355,7 @@ class HistoricalTrendEngine:
         trend_df["repeat_customers"] = trend_df["repeat_customers"].astype(int)
         trend_df["churned_customers"] = trend_df["churned_customers"].astype(int)
 
-        # 6. Cumulative Metrics & Survivorship Active Base (Issue 2 & 3 Fix)
+        # Build cumulative metrics and the surviving active customer base.
         trend_df["cumulative_acquired"] = trend_df["new_customers"].cumsum()
         trend_df["cumulative_churned"] = trend_df["churned_customers"].cumsum()
 
@@ -406,7 +388,7 @@ class HistoricalTrendEngine:
         trend_df = trend_df.reset_index().rename(columns={"index": "period_date"})
         trend_df["granularity"] = granularity.lower()
 
-        # 7. Right-Censoring Flag (Issue 1 Fix)
+        # Mark periods whose churn observation window is incomplete.
         # Periods whose return window extends beyond reference_date have incomplete churn observation
         if ref_date is not None:
             censoring_threshold_date = ref_date - pd.Timedelta(days=self.return_window_days)
@@ -423,10 +405,6 @@ class HistoricalTrendEngine:
         result["rolling_churn_rate"] = result["rolling_churn_rate"].round(4)
 
         return result
-
-    # =========================================================================
-    # Combined Master Trend Dataset (Schema 6.5)
-    # =========================================================================
 
     def build_combined_trend(
         self,
@@ -500,10 +478,6 @@ class HistoricalTrendEngine:
 
         return merged[COMBINED_TREND_COLUMNS].copy()
 
-    # =========================================================================
-    # All-In-One Trend Pipeline Builder (Issue 4 Validation Enforcement)
-    # =========================================================================
-
     def generate_all_trends(
         self,
         orders_df: pd.DataFrame,
@@ -535,7 +509,7 @@ class HistoricalTrendEngine:
             )
             combined_df = self.build_combined_trend(rev_df, churn_df)
 
-            # Strict Schema 6.5 Validations (Issue 4 Fix)
+            # Validate each generated trend against the data contract.
             val_rev = validate_revenue_trend_schema(rev_df)
             val_churn = validate_churn_trend_schema(churn_df)
             val_comb = validate_combined_trend_schema(combined_df)

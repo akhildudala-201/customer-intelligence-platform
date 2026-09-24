@@ -1,17 +1,10 @@
-"""
-app/segmentation/customer_analytics/Trends/schemas.py
-
-Schema 6.5 Specification for Historical Trend Analysis (Person 5 -> Person 6 Contract).
-Provides data validation schemas, column specifications, and validation utilities
-for Revenue, Churn, and Combined historical time-series datasets.
-"""
+"""Define and validate historical trend data contracts."""
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 import pandas as pd
 
 
-# Expected column schemas for Person 6 Consumption (Schema 6.5)
 REVENUE_TREND_COLUMNS: List[str] = [
     "granularity",
     "period_date",

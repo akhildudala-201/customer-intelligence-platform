@@ -1,10 +1,4 @@
-"""
-app.segmentation.customer_analytics.Trends package
-
-Person 5 — Historical Trend Analysis (Schema 6.5, trend half).
-Aggregates historical churn trends and historical revenue trends over time (daily/weekly/monthly)
-to feed Person 6 (Forecasting).
-"""
+"""Historical revenue and churn trend analysis package."""
 
 try:
     from app.segmentation.customer_analytics.Trends.data_loader import TrendDataLoader

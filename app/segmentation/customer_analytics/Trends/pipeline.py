@@ -1,10 +1,4 @@
-"""
-app/segmentation/customer_analytics/Trends/pipeline.py
-
-Pipeline Runner for Person 5 — Historical Trend Analysis (Schema 6.5).
-Executes data loading, daily/weekly/monthly revenue and churn trend aggregation,
-Schema 6.5 validation, persistence to MySQL, and analytical report generation.
-"""
+"""Run the historical revenue and churn trend pipeline."""
 
 import argparse
 from pathlib import Path
@@ -49,7 +43,6 @@ def run_trend_pipeline(
     print("PERSON 5 — HISTORICAL TREND ANALYSIS PIPELINE (SCHEMA 6.5)")
     print("=" * 70)
 
-    # 1. Load Data
     print("\n[1/4] Loading transaction and churn datasets...")
     loader = TrendDataLoader()
     orders_df = loader.load_transaction_data()
@@ -58,7 +51,6 @@ def run_trend_pipeline(
     churn_df = loader.load_customer_churn_data()
     print(f"      Loaded {len(churn_df):,} customer churn records.")
 
-    # 2. Compute Trends & Enforce Schema 6.5 Validations
     print("\n[2/4] Aggregating historical Revenue and Churn trends...")
     engine = HistoricalTrendEngine()
     grans = ["daily", "weekly", "monthly"] if granularity == "all" else [granularity]
@@ -78,7 +70,6 @@ def run_trend_pipeline(
             f"{churn_count} churn periods ({censored_count} right-censored tails) [Schema 6.5 VALID]"
         )
 
-    # 3. Save to MySQL
     persisted_tables = {}
     if save_db:
         print("\n[3/4] Persisting Schema 6.5 tables to MySQL database...")
@@ -87,7 +78,6 @@ def run_trend_pipeline(
     else:
         print("\n[3/4] Skipping MySQL database persistence (--no-db flag).")
 
-    # 4. Export CSV / JSON Reports
     exported_files = {}
     if export_files:
         print(f"\n[4/4] Exporting trend reports to: {output_dir}")
@@ -100,7 +90,6 @@ def run_trend_pipeline(
 
     print("\n" + "=" * 70)
     print("HISTORICAL TREND ANALYSIS COMPLETED SUCCESSFULLY")
-    print("Ready to feed Person 6 (Forecasting - Schema 6.5)")
     print("=" * 70 + "\n")
 
     return {
@@ -113,7 +102,7 @@ def run_trend_pipeline(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Person 5: Historical Trend Analysis CLI (Schema 6.5)"
+        description="Historical trend analysis CLI"
     )
     parser.add_argument(
         "--granularity",
