@@ -2,7 +2,7 @@
 
 A backend platform for customer intelligence — churn prediction, customer segmentation, and targeted retention marketing — built on the Olist Brazilian e-commerce dataset.
 
-This repository implements the end-to-end data pipeline and machine learning layer: CSV ingestion → cleaned MySQL tables → engineered behavioral features → churn labels → encoded & scaled model-ready splits → class imbalance handling → LightGBM and Logistic Regression → calibration → SHAP explainability → customer-level predictions for segmentation.
+This repository implements the end-to-end data pipeline and machine learning layer: CSV ingestion → cleaned MySQL tables → engineered behavioral features → churn labels → encoded & scaled model-ready splits → class imbalance handling → LightGBM and Logistic Regression → calibration → SHAP explainability → customer-level churn predictions → cohort and trend analytics → forecast generation → risk-tier classification + GMM segmentation → CLV scoring → campaign recommendations.
 
 ---
 
@@ -18,6 +18,9 @@ Using the Olist E-Commerce dataset, the platform:
 - Trains LightGBM and Logistic Regression churn classifiers, with threshold analysis, calibration, and odds-ratio interpretability for the logistic baseline.
 - Tracks data drift across temporal splits using Population Stability Index (PSI).
 - Automatically logs all training runs, thresholds, and confusion matrix metrics to centralized experiment trackers.
+- Runs customer cohort analysis, historical trend analysis, and time-series forecasting for churn and revenue behavior.
+- Builds a customer intelligence layer with risk-tier classification, Gaussian Mixture Model segmentation, and customer-level CLV scoring.
+- Generates campaign recommendation tables using combined risk, segment, and CLV signals for targeted retention actions.
 
 ---
 
@@ -259,29 +262,38 @@ The pipeline script [`scripts/run_pipeline.py`](./scripts/run_pipeline.py) orche
 
 ### 2. Run the complete pipeline
 
-This command builds the feature tables, runs cohort analysis, historical trend
-analysis and forecasting, trains both models, runs imbalance experiments,
-performs threshold analysis and model comparison, calibrates LightGBM, and
-refreshes the customer churn predictions table:
+This command builds the feature tables, runs the churn ML workflow, refreshes
+customer predictions, performs cohort and historical trend analysis,
+constructs forecast tables, and runs the segmentation stack (risk tiers,
+GMM customer segments, CLV, and campaign recommendations):
 
 ```bash
 .venv/bin/python scripts/run_pipeline.py --skip-ingest --train-all
 ```
 
-By default, the pipeline runs ingestion, data preparation, analytics, and an
-attempt to refresh the predictions table. Use `--skip-predictions` unless a
-valid calibrated artifact and `MODEL_VERSION` are already configured. Individual
-analytics stages can be skipped when their inputs or outputs are already available:
+By default, the pipeline runs ingestion, data preparation, ML training,
+analytics, and the downstream customer-intelligence modules. Use
+`--skip-predictions`, `--skip-segmentation`, `--skip-clv`, or
+`--skip-campaign` when those stages are already available or intentionally not
+needed. Individual stages can be skipped when their inputs or outputs are
+already available:
 
 ```bash
 .venv/bin/python scripts/run_pipeline.py --skip-cohort
 .venv/bin/python scripts/run_pipeline.py --skip-trends
 .venv/bin/python scripts/run_pipeline.py --skip-forecasting
+.venv/bin/python scripts/run_pipeline.py --skip-segmentation
+.venv/bin/python scripts/run_pipeline.py --skip-clv
+.venv/bin/python scripts/run_pipeline.py --skip-campaign
 .venv/bin/python scripts/run_pipeline.py --skip-predictions
 ```
 
-The full pipeline creates or refreshes these analytics tables:
+The full pipeline creates or refreshes these tables:
 
+- `model_ready_train`
+- `model_ready_val`
+- `model_ready_test`
+- `churn_predictions`
 - `customer_cohort_analysis`
 - `historical_revenue_trend`
 - `historical_churn_trend`
@@ -289,7 +301,11 @@ The full pipeline creates or refreshes these analytics tables:
 - `forecast_revenue_trend`
 - `forecast_churn_trend`
 - `forecast_trend_combined`
-- `churn_predictions`
+- `customer_intelligence_base`
+- `customer_risk_tiers`
+- `customer_segments`
+- `customer_clv`
+- `customer_campaign_recommendations`
 
 ### 3. Run only the ML pipeline
 
@@ -449,6 +465,7 @@ below describe expected contents rather than a fixed schema.
 | Split | `model_ready_train` | Temporal training split |
 | Split | `model_ready_val` | Validation split for threshold tuning |
 | Split | `model_ready_test` | Unseen test split for final reporting |
+| Predictions | `churn_predictions` | Eligible-customer probabilities, SHAP values, and reason codes |
 | Cohort | `customer_cohort_analysis` | Retention, repeat purchase, revenue, and churn by cohort and relative month |
 | Trends | `historical_revenue_trend` | Historical revenue trend by configured granularity |
 | Trends | `historical_churn_trend` | Historical churn trend by configured granularity |
@@ -456,7 +473,11 @@ below describe expected contents rather than a fixed schema.
 | Forecast | `forecast_revenue_trend` | Forecast revenue values and intervals |
 | Forecast | `forecast_churn_trend` | Forecast churn values and intervals |
 | Forecast | `forecast_trend_combined` | Combined revenue and churn forecasts |
-| Predictions | `churn_predictions` | Eligible-customer probabilities, SHAP values, and reason codes |
+| Segmentation | `customer_intelligence_base` | merged customer intelligence dataset used for risk & segmentation |
+| Segmentation | `customer_risk_tiers` | customer risk assignment derived from churn probability |
+| Segmentation | `customer_segments` | GMM segment membership and segment labels |
+| CLV | `customer_clv` | customer lifetime value score and output table |
+| Campaigns | `customer_campaign_recommendations` | recommended retention actions using segment, risk, and CLV inputs |
 
 ---
 
@@ -468,10 +489,11 @@ Run the full automated test suite from the repository root:
 pytest
 ```
 
-The suite contains 23 test modules covering ingestion and cleaning, feature
+The suite contains test modules covering ingestion and cleaning, feature
 engineering, database access, cohort analysis, forecasting, historical trends,
-class-imbalance handling, Logistic Regression, LightGBM, calibration, and the
-explainability/prediction interface. Use focused runs while developing:
+class-imbalance handling, Logistic Regression, LightGBM, calibration,
+segmentation, CLV, campaign recommendations, and the explainability/prediction
+interface. Use focused runs while developing:
 
 ```bash
 pytest tests/test_cohort_analysis.py
