@@ -1,89 +1,82 @@
 
 
+import sys
+from datetime import datetime
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
 from statsmodels.tsa.exponential_smoothing.ets import ETSModel
 
-from app.Database.database import engine
 
-np.random.seed(42)
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(PROJECT_ROOT))
 
-GRANULARITY = "monthly"                        # "daily", "weekly", or "monthly"
+from app.Database.database import engine  # noqa: E402  (shared engine, reads .env)
+
+# ----------------------------------------------------------------------
+# Config
+# ----------------------------------------------------------------------
+GRANULARITY = "monthly"        # "daily" | "weekly" | "monthly"
+FORECAST_HORIZON = 6           # periods to forecast ahead
+TEST_HOLDOUT = 6               # recent periods held back to measure accuracy
+
 INPUT_TABLE = "historical_trend_combined"
-FORECAST_HORIZON = 6                           # periods ahead to forecast
-SEASONAL_PERIOD = 12                           # 12=monthly/yearly, 52=weekly, 7=daily-weekly
-TEST_HOLDOUT = 6                               # periods held out to validate accuracy
-OUTPUT_DIR = Path(__file__).resolve().parents[4] / "outputs" / "forecast_outputs"   # app/outputs/forecast_outputs
+OUTPUT_DIR = PROJECT_ROOT / "outputs" / "forecast_outputs"
 
-
-def get_engine():
-    return engine
+# Default pandas frequency and seasonal cycle length per granularity.
+# The actual frequency is inferred from the data when possible (e.g. weekly
+# periods may start on any weekday); the default is only a fallback.
+FREQ_CONFIG = {
+    "daily":   ("D", 7),
+    "weekly":  ("W", 52),
+    "monthly": ("MS", 12),
+}
 
 
 # ----------------------------------------------------------------------
-# STEP 1 - LOAD trend data from MySQL
-# Real historical_trend_combined schema:
-#   granularity, period_date, total_revenue, order_count, unique_customers,
-#   avg_order_value, avg_revenue_per_user, revenue_growth_pct,
-#   active_customers, new_customers, repeat_customers, churned_customers,
-#   churn_rate, retention_rate, rolling_churn_rate, is_forecast
+# 1. Load
 # ----------------------------------------------------------------------
-def load_trend_data(engine):
+def load_trend_data() -> pd.DataFrame:
+    """Read historical (non-forecast) rows for one granularity, oldest first."""
     query = text(f"""
         SELECT *
         FROM {INPUT_TABLE}
         WHERE granularity = :granularity
           AND (is_forecast = 0 OR is_forecast IS NULL)
-        ORDER BY period_date ASC
+        ORDER BY period_date
     """)
     df = pd.read_sql(query, engine, params={"granularity": GRANULARITY})
-
     if df.empty:
-        raise ValueError(
-            f"No rows returned from `{INPUT_TABLE}` for granularity='{GRANULARITY}'. "
-            f"Check the table/column names match your actual schema."
-        )
+        raise ValueError(f"No '{GRANULARITY}' rows found in {INPUT_TABLE}.")
 
-    df = df.rename(columns={"period_date": "period_start", "total_revenue": "revenue"})
-    df["period_start"] = pd.to_datetime(df["period_start"])
-    df = df.sort_values("period_start").reset_index(drop=True)
+    df["period_date"] = pd.to_datetime(df["period_date"])
+    df = df.rename(columns={"total_revenue": "revenue"}).reset_index(drop=True)
 
-    # Guard against a partial/in-progress trailing period (e.g. data pulled
-    # mid-month, so the most recent row only has a few days of orders).
-    # If the last period's order_count is far below the recent median, it's
-    # almost certainly incomplete rather than a real collapse -> drop it.
-    if len(df) > 6 and "order_count" in df.columns:
+    # The latest period is often still in progress (data pulled mid-period).
+    # If its order count is under 20% of the recent median, treat it as
+    # incomplete and drop it; otherwise it looks like a sudden collapse.
+    if len(df) > 6:
         recent_median = df["order_count"].iloc[-7:-1].median()
         last_count = df["order_count"].iloc[-1]
         if recent_median > 0 and last_count < 0.2 * recent_median:
-            print(
-                f"      [load_trend_data] Dropping likely-incomplete trailing period "
-                f"{df['period_start'].iloc[-1].date()} (order_count={last_count} vs "
-                f"recent median={recent_median:.0f})"
-            )
-            df = df.iloc[:-1].reset_index(drop=True)
+            print(f"      Dropping incomplete last period {df['period_date'].iloc[-1].date()} "
+                  f"({last_count} orders vs median {recent_median:.0f})")
+            df = df.iloc[:-1]
 
-    return df
+    return df.set_index("period_date")
 
 
 # ----------------------------------------------------------------------
-# STEP 2 - TRANSFORMS (churn is bounded 0-1, model it in logit space)
+# 2. Helpers
 # ----------------------------------------------------------------------
-def trim_leading_zeros(raw_series, threshold=1e-3):
-    """
-    Drop leading periods where the raw value is ~0. For churn specifically,
-    early zero periods usually mean "not enough customer tenure yet to
-    measure churn" rather than genuine zero churn -- treating that as real
-    signal makes the model see a steep 0 -> ~0.08 climb and extrapolate
-    that climb forever. Trimming lets the model fit only the mature,
-    steady-state period.
-    """
-    nonzero_idx = np.where(raw_series.values > threshold)[0]
-    if len(nonzero_idx) == 0:
-        return raw_series
-    return raw_series.iloc[nonzero_idx[0]:]
+def trim_leading_zeros(series: pd.Series, threshold: float = 1e-3) -> pd.Series:
+    """Drop the early run of ~0 values (churn can't be measured until
+    customers have enough tenure); otherwise the model mistakes the
+    ramp-up for a trend and extrapolates it."""
+    nonzero = np.flatnonzero(series.values > threshold)
+    return series.iloc[nonzero[0]:] if len(nonzero) else series
 
 
 def logit(p, eps=1e-4):
@@ -96,130 +89,119 @@ def inv_logit(x):
 
 
 # ----------------------------------------------------------------------
-# STEP 3 - FIT + FORECAST a single series with ETS (Holt-Winters family)
-# Falls back to a non-seasonal model automatically if there isn't enough
-# history (< 2 full seasonal cycles) to estimate seasonality reliably.
+# 3. Model
 # ----------------------------------------------------------------------
-def fit_and_forecast(series, horizon, seasonal_periods, seasonal="add", trend="add", freq="MS"):
-    series = series.astype(float)
-    series.index = pd.DatetimeIndex(series.index, freq=freq)
+def fit_and_forecast(series: pd.Series, horizon: int, freq: str, season_len: int):
+    """Fit damped-trend ETS and forecast `horizon` periods with a 95% interval.
 
-    use_seasonal = seasonal_periods is not None and len(series) >= 2 * seasonal_periods
-    effective_seasonal = seasonal if use_seasonal else None
-    effective_seasonal_periods = seasonal_periods if use_seasonal else None
+    Seasonality is only used when there are at least two full cycles of
+    history; with less, ETS can't estimate it and the model runs trend-only.
+    Returns (summary DataFrame with mean/pi_lower/pi_upper, model label).
+    """
+    series = series.astype(float).asfreq(freq)
+    seasonal = len(series) >= 2 * season_len
 
-
-    model = ETSModel(
+    fit = ETSModel(
         series,
         error="add",
-        trend=trend,
-        damped_trend=(trend is not None),
-        seasonal=effective_seasonal,
-        seasonal_periods=effective_seasonal_periods,
-    )
-    fit = model.fit(disp=False)
-    pred = fit.get_prediction(start=len(series), end=len(series) + horizon - 1)
-    summary = pred.summary_frame(alpha=0.05)  # 95% CI
-    return fit, summary
+        trend="add",
+        damped_trend=True,  # stops the trend running away over the horizon
+        seasonal="add" if seasonal else None,
+        seasonal_periods=season_len if seasonal else None,
+    ).fit(disp=False)
+
+    summary = fit.get_prediction(start=len(series), end=len(series) + horizon - 1) \
+                 .summary_frame(alpha=0.05)
+    label = "ETS damped-trend" + (" + seasonal" if seasonal else "")
+    return summary, label
 
 
-# ----------------------------------------------------------------------
-# STEP 4 - VALIDATE ON HOLDOUT (time-based split, not random)
-# ----------------------------------------------------------------------
-def evaluate_holdout(series, horizon, **kwargs):
+def evaluate_holdout(series, horizon, freq, season_len, inverse=None):
+    """Train on all but the last `horizon` periods, score on those periods.
+    `inverse` converts back to the original scale first (e.g. inv_logit for
+    churn), so MAPE/RMSE are in business units rather than logit units."""
     train, test = series.iloc[:-horizon], series.iloc[-horizon:]
-    _, summary = fit_and_forecast(train, horizon, **kwargs)
-    preds, actual = summary["mean"].values, test.values
+    summary, _ = fit_and_forecast(train, horizon, freq, season_len)
 
-    # Guard against divide-by-zero in MAPE for near-zero actual periods
-    nonzero_mask = np.abs(actual) > 1e-6
-    if nonzero_mask.sum() > 0:
-        mape = np.mean(np.abs((actual[nonzero_mask] - preds[nonzero_mask]) / actual[nonzero_mask])) * 100
-    else:
-        mape = np.nan
+    preds, actual = summary["mean"].values, test.values
+    if inverse is not None:
+        preds, actual = inverse(preds), inverse(actual)
+
+    nonzero = np.abs(actual) > 1e-6  # skip ~0 actuals to avoid divide-by-zero in MAPE
+    mape = np.mean(np.abs((actual[nonzero] - preds[nonzero]) / actual[nonzero])) * 100 if nonzero.any() else np.nan
     rmse = np.sqrt(np.mean((actual - preds) ** 2))
     return mape, rmse
 
 
 # ----------------------------------------------------------------------
-# STEP 5 - WRITE forecast tables back to MySQL
-# ----------------------------------------------------------------------
-def write_forecast_to_mysql(engine, revenue_df, churn_df, combined_df):
-    revenue_df.to_sql("forecast_revenue_trend", engine, if_exists="replace", index=False)
-    churn_df.to_sql("forecast_churn_trend", engine, if_exists="replace", index=False)
-    combined_df.to_sql("forecast_trend_combined", engine, if_exists="replace", index=False)
-    print("[MySQL] Saved forecast_revenue_trend, forecast_churn_trend, forecast_trend_combined")
-
-
-# ----------------------------------------------------------------------
-# MAIN PIPELINE
+# 4. Pipeline
 # ----------------------------------------------------------------------
 def main():
-    freq_map = {"daily": "D", "weekly": "W", "monthly": "MS"}
-    offset_map = {"daily": pd.DateOffset(days=1), "weekly": pd.DateOffset(weeks=1), "monthly": pd.DateOffset(months=1)}
-    freq = freq_map[GRANULARITY]
+    default_freq, season_len = FREQ_CONFIG[GRANULARITY]
 
-    print(f"[1/4] Loading trend data from MySQL (table: {INPUT_TABLE}, granularity: {GRANULARITY})...")
-    df = load_trend_data(engine)
-    df = df.set_index("period_start")
-    print(f"      Loaded {len(df)} clean periods "
-          f"({df.index.min().date()} to {df.index.max().date()})")
+    print(f"[1/4] Loading {GRANULARITY} history from {INPUT_TABLE}...")
+    df = load_trend_data()
+    freq = pd.infer_freq(df.index) or default_freq
+    revenue = df["revenue"]
+    churn_logit = trim_leading_zeros(df["churn_rate"]).apply(logit)
+    print(f"      {len(df)} periods ({df.index.min().date()} to {df.index.max().date()}); "
+          f"churn modelled from {churn_logit.index.min().date()}")
 
-    revenue_series = df["revenue"]
-    churn_series = trim_leading_zeros(df["churn_rate"])
-    churn_logit_series = churn_series.apply(logit)
-    print(f"      Churn series trimmed to {len(churn_series)} mature periods "
-          f"(from {churn_series.index.min().date()} onward)")
+    print(f"[2/4] Holdout validation on last {TEST_HOLDOUT} periods...")
+    rev_mape, rev_rmse = evaluate_holdout(revenue, TEST_HOLDOUT, freq, season_len)
+    ch_mape, ch_rmse = evaluate_holdout(churn_logit, TEST_HOLDOUT, freq, season_len, inverse=inv_logit)
+    print(f"      Revenue: MAPE {rev_mape:.2f}% | RMSE {rev_rmse:,.2f}")
+    print(f"      Churn  : MAPE {ch_mape:.2f}% | RMSE {ch_rmse:.4f}")
 
-    print(f"[2/4] Validating on last {TEST_HOLDOUT} periods...")
-    rev_mape, rev_rmse = evaluate_holdout(revenue_series, TEST_HOLDOUT, seasonal_periods=SEASONAL_PERIOD, freq=freq)
-    churn_mape, churn_rmse = evaluate_holdout(churn_logit_series, TEST_HOLDOUT, seasonal_periods=SEASONAL_PERIOD, freq=freq)
-    print(f"      Revenue -> MAPE: {rev_mape:.2f}%  RMSE: {rev_rmse:,.2f}")
-    print(f"      Churn (logit space) -> MAPE: {churn_mape:.2f}%  RMSE: {churn_rmse:.4f}")
+    print(f"[3/4] Forecasting {FORECAST_HORIZON} periods ahead...")
+    rev_fc, rev_model = fit_and_forecast(revenue, FORECAST_HORIZON, freq, season_len)
+    churn_fc, churn_model = fit_and_forecast(churn_logit, FORECAST_HORIZON, freq, season_len)
+    churn_fc = churn_fc.apply(inv_logit)  # back to a 0-1 rate
 
-    print(f"[3/4] Refitting on full history and forecasting {FORECAST_HORIZON} periods forward...")
-    _, revenue_fc = fit_and_forecast(revenue_series, FORECAST_HORIZON, SEASONAL_PERIOD, freq=freq)
-    _, churn_fc_logit = fit_and_forecast(churn_logit_series, FORECAST_HORIZON, SEASONAL_PERIOD, freq=freq)
-
-    churn_mean = inv_logit(churn_fc_logit["mean"])
-    churn_lo = inv_logit(churn_fc_logit["pi_lower"])
-    churn_hi = inv_logit(churn_fc_logit["pi_upper"])
-
-    future_dates = pd.date_range(start=df.index[-1] + offset_map[GRANULARITY], periods=FORECAST_HORIZON, freq=freq)
+    # Shared columns for every output table
+    base = {
+        "period_date": rev_fc.index,
+        "granularity": GRANULARITY,
+        "generated_at": datetime.now().replace(microsecond=0),
+    }
 
     revenue_out = pd.DataFrame({
-        "period_start": future_dates,
-        "granularity": GRANULARITY,
-        "forecasted_revenue": revenue_fc["mean"].round(2).values,
-        "ci_lower_revenue": revenue_fc["pi_lower"].round(2).values,
-        "ci_upper_revenue": revenue_fc["pi_upper"].round(2).values,
-        "model_used": "ETS Holt-Winters (additive)",
+        **base,
+        "forecasted_revenue": rev_fc["mean"].round(2).values,
+        "ci_lower_revenue": rev_fc["pi_lower"].round(2).values,
+        "ci_upper_revenue": rev_fc["pi_upper"].round(2).values,
+        "holdout_mape_pct": round(rev_mape, 2),
+        "model_used": rev_model,
     })
 
     churn_out = pd.DataFrame({
-        "period_start": future_dates,
-        "granularity": GRANULARITY,
-        "forecasted_churn_rate": churn_mean.round(4).values,
-        "ci_lower_churn": churn_lo.round(4).values,
-        "ci_upper_churn": churn_hi.round(4).values,
-        "model_used": "ETS Holt-Winters (logit-transformed)",
+        **base,
+        "forecasted_churn_rate": churn_fc["mean"].round(4).values,
+        "ci_lower_churn": churn_fc["pi_lower"].round(4).values,
+        "ci_upper_churn": churn_fc["pi_upper"].round(4).values,
+        "holdout_mape_pct": round(ch_mape, 2),
+        "model_used": f"{churn_model} (logit)",
     })
 
-    combined_out = revenue_out.merge(churn_out, on=["period_start", "granularity"], suffixes=("_rev", "_churn"))
+    combined_out = revenue_out.merge(
+        churn_out, on=["period_date", "granularity", "generated_at"], suffixes=("_revenue", "_churn")
+    )
 
-    print("[4/4] Writing forecast tables back to MySQL...")
-    write_forecast_to_mysql(engine, revenue_out, churn_out, combined_out)
-
-    # Local CSV backups as well
+    print("[4/4] Saving results...")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    revenue_out.to_csv(OUTPUT_DIR / "forecast_revenue_trend.csv", index=False)
-    churn_out.to_csv(OUTPUT_DIR / "forecast_churn_trend.csv", index=False)
-    combined_out.to_csv(OUTPUT_DIR / "forecast_trend_combined.csv", index=False)
-    print(f"      Local CSV backups written to: {OUTPUT_DIR.resolve()}")
+    outputs = {
+        "forecast_revenue_trend": revenue_out,
+        "forecast_churn_trend": churn_out,
+        "forecast_trend_combined": combined_out,
+    }
+    for table, frame in outputs.items():
+        frame.to_sql(table, engine, if_exists="replace", index=False)
+        frame.to_csv(OUTPUT_DIR / f"{table}.csv", index=False)
+        print(f"      Saved {len(frame)} rows -> MySQL `{table}` + {table}.csv")
 
     print("\n" + "=" * 70)
     print("FORECASTING COMPLETE")
-    print(combined_out.to_string(index=False))
+    print(combined_out[["period_date", "forecasted_revenue", "forecasted_churn_rate"]].to_string(index=False))
     print("=" * 70)
 
 
