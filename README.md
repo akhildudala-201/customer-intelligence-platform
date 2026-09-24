@@ -252,12 +252,27 @@ The pipeline script [`scripts/run_pipeline.py`](./scripts/run_pipeline.py) orche
 
 ### 1. Build the database, feature, and analytics tables
 
+By default, the script also runs prediction generation, cohort and trend
+analytics, forecasting, segmentation, CLV, and campaign recommendations.
+Those downstream stages require their upstream tables to exist. To build only
+the database, feature, and analytics inputs without refreshing predictions or
+running downstream customer-intelligence stages:
+
 ```bash
-# Ingest the CSV files and build all tables except churn predictions:
-.venv/bin/python scripts/run_pipeline.py --skip-predictions
+# Ingest the CSV files and build the prerequisite tables:
+.venv/bin/python scripts/run_pipeline.py \
+  --skip-predictions \
+  --skip-segmentation \
+  --skip-clv \
+  --skip-campaign
 
 # Skip ingestion when raw tables already exist:
-.venv/bin/python scripts/run_pipeline.py --skip-ingest --skip-predictions
+.venv/bin/python scripts/run_pipeline.py \
+  --skip-ingest \
+  --skip-predictions \
+  --skip-segmentation \
+  --skip-clv \
+  --skip-campaign
 ```
 
 ### 2. Run the complete pipeline
@@ -271,8 +286,10 @@ GMM customer segments, CLV, and campaign recommendations):
 .venv/bin/python scripts/run_pipeline.py --skip-ingest --train-all
 ```
 
-By default, the pipeline runs ingestion, data preparation, ML training,
-analytics, and the downstream customer-intelligence modules. Use
+By default, the pipeline runs ingestion, feature preparation, prediction
+generation, analytics, and the downstream customer-intelligence modules. It
+does not train models unless one of the training flags is provided. Use
+`--train-all` for the complete ML workflow, or use
 `--skip-predictions`, `--skip-segmentation`, `--skip-clv`, or
 `--skip-campaign` when those stages are already available or intentionally not
 needed. Individual stages can be skipped when their inputs or outputs are
