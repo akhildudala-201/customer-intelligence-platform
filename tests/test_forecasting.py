@@ -8,6 +8,7 @@ Run from the project root:  pytest tests/test_forecasting.py -v
 import importlib
 import sys
 import types
+import warnings
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -53,8 +54,9 @@ def monthly_series(n=30, seed=0):
     return pd.Series(values, index=pd.date_range("2016-01-01", periods=n, freq="MS"))
 
 
-def raw_trend_table(n=24, incomplete_last=False):
-    """Rows shaped like historical_trend_combined (only the columns the code uses)."""
+def raw_trend_table(n=24, incomplete_last=0):
+    """Rows shaped like historical_trend_combined (only the columns the code uses).
+    `incomplete_last` = number of trailing partial periods (1 order each)."""
     df = pd.DataFrame({
         "granularity": "monthly",
         "period_date": pd.date_range("2016-09-01", periods=n, freq="MS"),
@@ -64,7 +66,7 @@ def raw_trend_table(n=24, incomplete_last=False):
         "is_forecast": 0,
     })
     if incomplete_last:
-        df.loc[df.index[-1], "order_count"] = 1  # partial mid-month pull
+        df.loc[df.index[-incomplete_last:], "order_count"] = 1  # partial periods at the end
     return df
 
 
@@ -109,6 +111,22 @@ class TestTrimLeadingZeros:
 
 
 # ----------------------------------------------------------------------
+# fill_zero_gaps
+# ----------------------------------------------------------------------
+class TestFillZeroGaps:
+    def test_interpolates_interior_zeros(self, fc):
+        s = pd.Series([0.04, 0.0, 0.0, 0.07])
+        np.testing.assert_allclose(fc.fill_zero_gaps(s), [0.04, 0.05, 0.06, 0.07])
+
+    def test_no_zeros_unchanged(self, fc):
+        s = pd.Series([0.05, 0.06, 0.07])
+        pd.testing.assert_series_equal(fc.fill_zero_gaps(s), s)
+
+    def test_zero_at_end_filled_from_last_value(self, fc):
+        assert list(fc.fill_zero_gaps(pd.Series([0.05, 0.06, 0.0]))) == [0.05, 0.06, 0.06]
+
+
+# ----------------------------------------------------------------------
 # fit_and_forecast
 # ----------------------------------------------------------------------
 class TestFitAndForecast:
@@ -132,6 +150,22 @@ class TestFitAndForecast:
         _, label = fc.fit_and_forecast(monthly_series(24), horizon=3, freq="MS", season_len=12)
         assert "seasonal" in label
 
+    def test_constant_series_gives_flat_forecast_without_warnings(self, fc):
+        # Zero-variance input would make ETS take log(0); it must be handled explicitly.
+        flat = pd.Series(0.0, index=pd.date_range("2016-01-01", periods=18, freq="MS"))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            summary, label = fc.fit_and_forecast(flat, horizon=3, freq="MS", season_len=12)
+        assert (summary[["mean", "pi_lower", "pi_upper"]] == 0).all().all()
+        assert list(summary.index) == list(pd.date_range("2017-07-01", periods=3, freq="MS"))
+        assert label.startswith("constant")
+
+    def test_normal_series_fits_without_warnings(self, fc):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            _, label = fc.fit_and_forecast(monthly_series(30), horizon=6, freq="MS", season_len=12)
+        assert "did not converge" not in label
+
     def test_falls_back_to_trend_only_with_short_history(self, fc):
         # < 2 seasonal cycles: ETS can't estimate seasonality, must not raise
         summary, label = fc.fit_and_forecast(monthly_series(15), horizon=3, freq="MS", season_len=12)
@@ -148,13 +182,24 @@ class TestEvaluateHoldout:
         assert np.isfinite(mape) and np.isfinite(rmse)
         assert mape >= 0 and rmse >= 0
 
-    # Near-constant zero data makes statsmodels warn about convergence; expected here.
-    @pytest.mark.filterwarnings("ignore::Warning")
-    def test_zero_actuals_do_not_crash(self, fc):
+    def test_zero_actuals_no_divide_by_zero(self, fc):
+        # Training slice is 18 zeros (flat) and one holdout actual is 0.
+        # Must produce finite metrics with no numerical warnings at all:
+        # the flat series skips ETS, and MAPE skips the zero actual.
         values = np.r_[np.zeros(18), [0.0, 0.02, 0.03, 0.04, 0.05, 0.06]]
         series = pd.Series(values, index=pd.date_range("2016-01-01", periods=24, freq="MS"))
-        mape, rmse = fc.evaluate_holdout(series, 6, "MS", 12)
-        assert np.isfinite(mape) and rmse >= 0
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any warning fails the test
+            mape, rmse = fc.evaluate_holdout(series, 6, "MS", 12)
+        assert mape == pytest.approx(100.0)  # flat 0 forecast vs non-zero actuals
+        assert np.isfinite(rmse) and rmse >= 0
+
+    def test_mape_ignores_zero_actuals(self, fc):
+        # A zero in the holdout must not turn MAPE into inf/nan.
+        values = np.r_[np.linspace(100, 200, 18), [0.0, 210, 220, 230, 240, 250]]
+        series = pd.Series(values, index=pd.date_range("2016-01-01", periods=24, freq="MS"))
+        mape, _ = fc.evaluate_holdout(series, 6, "MS", 12)
+        assert np.isfinite(mape)
 
     def test_inverse_reports_metrics_in_rate_units(self, fc):
         # Churn is modelled in logit space; with inverse=inv_logit the RMSE
@@ -184,8 +229,14 @@ class TestLoadTrendData:
         assert mock_sql.call_args.kwargs["params"] == {"granularity": fc.GRANULARITY}
 
     def test_drops_incomplete_last_period(self, fc):
-        df, _ = self._load(fc, raw_trend_table(24, incomplete_last=True))
+        df, _ = self._load(fc, raw_trend_table(24, incomplete_last=1))
         assert len(df) == 23
+
+    def test_drops_several_incomplete_trailing_periods(self, fc):
+        # Real data ends with two partial months (Sep and Oct 2018); both must go.
+        df, _ = self._load(fc, raw_trend_table(24, incomplete_last=2))
+        assert len(df) == 22
+        assert df["order_count"].iloc[-1] == 6000
 
     def test_keeps_normal_last_period(self, fc):
         df, _ = self._load(fc, raw_trend_table(24))
@@ -227,3 +278,6 @@ class TestMain:
         # Churn forecast and its interval must stay valid rates
         for col in ("forecasted_churn_rate", "ci_lower_churn", "ci_upper_churn"):
             assert combined[col].between(0, 1).all()
+        # Revenue and its interval can never be negative
+        for col in ("forecasted_revenue", "ci_lower_revenue", "ci_upper_revenue"):
+            assert (combined[col] >= 0).all()

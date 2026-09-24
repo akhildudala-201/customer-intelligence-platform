@@ -1,5 +1,15 @@
+"""
+Task 6 - Churn & Revenue Forecasting (Schema 6.5, forecast half)
 
+Input : historical_trend_combined        (written by Person 5's Trends pipeline)
+Output: forecast_revenue_trend,
+        forecast_churn_trend,
+        forecast_trend_combined          (MySQL, replaced on every run)
+        + CSV copies in <project_root>/outputs/forecast_outputs/
 
+Model : ETS (Holt-Winters) with a damped trend.
+        Churn is modelled in logit space so forecasts always stay between 0 and 1.
+"""
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +19,9 @@ import pandas as pd
 from sqlalchemy import text
 from statsmodels.tsa.exponential_smoothing.ets import ETSModel
 
-
+# This file lives at <root>/app/segmentation/customer_analytics/forecasting/,
+# so parents[4] is the project root. Adding it to sys.path lets the script run
+# from any working directory.
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -54,16 +66,18 @@ def load_trend_data() -> pd.DataFrame:
     df["period_date"] = pd.to_datetime(df["period_date"])
     df = df.rename(columns={"total_revenue": "revenue"}).reset_index(drop=True)
 
-    # The latest period is often still in progress (data pulled mid-period).
-    # If its order count is under 20% of the recent median, treat it as
-    # incomplete and drop it; otherwise it looks like a sudden collapse.
-    if len(df) > 6:
+    # The last few periods can be partial (data cut off mid-period), e.g. the
+    # Olist export ends with Sep and Oct 2018 holding only a handful of orders.
+    # Drop trailing periods while their order count is under 20% of the median
+    # of the 6 periods before them; otherwise they look like a sudden collapse.
+    while len(df) > 6:
         recent_median = df["order_count"].iloc[-7:-1].median()
         last_count = df["order_count"].iloc[-1]
-        if recent_median > 0 and last_count < 0.2 * recent_median:
-            print(f"      Dropping incomplete last period {df['period_date'].iloc[-1].date()} "
-                  f"({last_count} orders vs median {recent_median:.0f})")
-            df = df.iloc[:-1]
+        if not (recent_median > 0 and last_count < 0.2 * recent_median):
+            break
+        print(f"      Dropping incomplete period {df['period_date'].iloc[-1].date()} "
+              f"({last_count} orders vs median {recent_median:.0f})")
+        df = df.iloc[:-1]
 
     return df.set_index("period_date")
 
@@ -77,6 +91,14 @@ def trim_leading_zeros(series: pd.Series, threshold: float = 1e-3) -> pd.Series:
     ramp-up for a trend and extrapolates it."""
     nonzero = np.flatnonzero(series.values > threshold)
     return series.iloc[nonzero[0]:] if len(nonzero) else series
+
+
+def fill_zero_gaps(series: pd.Series) -> pd.Series:
+    """Treat 0 values after the series has started as missing and interpolate.
+    Exactly 0% churn across thousands of active customers (e.g. May-Jun 2017)
+    is a measurement gap, not real; in logit space a 0 becomes about -9 against
+    about -2 for normal months, which badly distorts the fitted trend."""
+    return series.replace(0, np.nan).interpolate().bfill().ffill()
 
 
 def logit(p, eps=1e-4):
@@ -99,6 +121,16 @@ def fit_and_forecast(series: pd.Series, horizon: int, freq: str, season_len: int
     Returns (summary DataFrame with mean/pi_lower/pi_upper, model label).
     """
     series = series.astype(float).asfreq(freq)
+    future_index = pd.date_range(series.index[-1], periods=horizon + 1, freq=freq)[1:]
+
+    # A perfectly flat series (e.g. all zeros) has zero variance, so ETS's
+    # log-likelihood takes log(0) and the fit is meaningless. The honest
+    # forecast is simply "stays at that value".
+    if series.nunique() <= 1:
+        value = series.iloc[-1]
+        flat = pd.DataFrame({"mean": value, "pi_lower": value, "pi_upper": value}, index=future_index)
+        return flat, "constant (no variation in history)"
+
     seasonal = len(series) >= 2 * season_len
 
     fit = ETSModel(
@@ -113,6 +145,10 @@ def fit_and_forecast(series: pd.Series, horizon: int, freq: str, season_len: int
     summary = fit.get_prediction(start=len(series), end=len(series) + horizon - 1) \
                  .summary_frame(alpha=0.05)
     label = "ETS damped-trend" + (" + seasonal" if seasonal else "")
+
+    # Record (rather than hide) a failed optimisation so it shows up in the output tables.
+    if not fit.mle_retvals.get("converged", True):
+        label += " [did not converge]"
     return summary, label
 
 
@@ -143,7 +179,7 @@ def main():
     df = load_trend_data()
     freq = pd.infer_freq(df.index) or default_freq
     revenue = df["revenue"]
-    churn_logit = trim_leading_zeros(df["churn_rate"]).apply(logit)
+    churn_logit = fill_zero_gaps(trim_leading_zeros(df["churn_rate"])).apply(logit)
     print(f"      {len(df)} periods ({df.index.min().date()} to {df.index.max().date()}); "
           f"churn modelled from {churn_logit.index.min().date()}")
 
@@ -155,6 +191,7 @@ def main():
 
     print(f"[3/4] Forecasting {FORECAST_HORIZON} periods ahead...")
     rev_fc, rev_model = fit_and_forecast(revenue, FORECAST_HORIZON, freq, season_len)
+    rev_fc = rev_fc.clip(lower=0)  # revenue can't be negative; wide intervals can dip below 0
     churn_fc, churn_model = fit_and_forecast(churn_logit, FORECAST_HORIZON, freq, season_len)
     churn_fc = churn_fc.apply(inv_logit)  # back to a 0-1 rate
 
