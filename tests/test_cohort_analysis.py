@@ -377,40 +377,43 @@ def test_min_orders_is_local_to_cohort_output():
 
 def test_load_scoped_input_reads_database_tables_and_writer_persists_result():
     engine = create_engine("sqlite+pysqlite:///:memory:")
-    pd.DataFrame(
-        {
-            "customer_id": ["c1"],
-            "customer_unique_id": ["person-1"],
-        }
-    ).to_sql("customers", engine, index=False)
-    pd.DataFrame(
-        {
-            "order_id": ["o1"],
-            "customer_id": ["c1"],
-            "order_purchase_timestamp": ["2017-01-01"],
-        }
-    ).to_sql("orders", engine, index=False)
-    pd.DataFrame(
-        {"order_id": ["o1"], "payment_value": [42.0]}
-    ).to_sql("order_payments", engine, index=False)
-    pd.DataFrame(
-        {
-            "customer_unique_id": ["person-1"],
-            "label": [0],
-            "censored": [False],
-        }
-    ).to_sql("customer_churn_labels", engine, index=False)
+    try:
+        pd.DataFrame(
+            {
+                "customer_id": ["c1"],
+                "customer_unique_id": ["person-1"],
+            }
+        ).to_sql("customers", engine, index=False)
+        pd.DataFrame(
+            {
+                "order_id": ["o1"],
+                "customer_id": ["c1"],
+                "order_purchase_timestamp": ["2017-01-01"],
+            }
+        ).to_sql("orders", engine, index=False)
+        pd.DataFrame(
+            {"order_id": ["o1"], "payment_value": [42.0]}
+        ).to_sql("order_payments", engine, index=False)
+        pd.DataFrame(
+            {
+                "customer_unique_id": ["person-1"],
+                "label": [0],
+                "censored": [False],
+            }
+        ).to_sql("customer_churn_labels", engine, index=False)
 
-    scoped = load_scoped_input(connection=engine)
-    result = calculate_cohort_analysis(scoped, generated_date="2018-01-01")
-    write_cohort_analysis(result, engine)
+        scoped = load_scoped_input(connection=engine)
+        result = calculate_cohort_analysis(scoped, generated_date="2018-01-01")
+        write_cohort_analysis(result, engine)
 
-    stored = pd.read_sql_table(TABLE_NAME, engine)
-    assert len(scoped) == 1
-    pd.testing.assert_frame_equal(
-        stored.assign(
-            generated_date=pd.to_datetime(stored["generated_date"]).dt.date
-        ),
-        result,
-        check_dtype=False,
-    )
+        stored = pd.read_sql_table(TABLE_NAME, engine)
+        assert len(scoped) == 1
+        pd.testing.assert_frame_equal(
+            stored.assign(
+                generated_date=pd.to_datetime(stored["generated_date"]).dt.date
+            ),
+            result,
+            check_dtype=False,
+        )
+    finally:
+        engine.dispose()

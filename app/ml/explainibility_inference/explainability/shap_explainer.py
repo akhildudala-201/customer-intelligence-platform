@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 from typing import Any
+import warnings
 
 import numpy as np
 import pandas as pd
-import shap
+
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message=r"The set_(bad|over|under) function will be deprecated.*",
+        category=PendingDeprecationWarning,
+        module=r"shap\.plots\.colors\._colors",
+    )
+    import shap
 
 
 class ChurnShapExplainer:
@@ -22,7 +31,17 @@ class ChurnShapExplainer:
                 f"{self.feature_names}, got {list(X.columns)}."
             )
 
-        raw_shap_values = self._explainer.shap_values(X)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=(
+                    r"LightGBM binary classifier with TreeExplainer shap values "
+                    r"output has changed to a list of ndarray"
+                ),
+                category=UserWarning,
+                module=r"shap\.explainers\._tree",
+            )
+            raw_shap_values = self._explainer.shap_values(X)
 
         values = self._normalize_to_positive_class(raw_shap_values)
 
