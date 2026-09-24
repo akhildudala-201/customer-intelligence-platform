@@ -9,7 +9,15 @@ ROOT = Path(__file__).resolve().parents[1]
 DB_DIR = ROOT / "app" / "Database"
 FEATURES_DIR = ROOT / "app" / "Features"
 TRENDS_DIR = ROOT / "app" / "segmentation" / "customer_analytics" / "Trends"
+ANALYTICS_DIR = ROOT / "app" / "segmentation" / "customer_analytics"
+FORECASTING_DIR = ANALYTICS_DIR / "forecasting"
 ML_DIR = ROOT / "app" / "ml"
+PREDICTIONS_SCRIPT = (
+    ML_DIR
+    / "explainibility_inference"
+    / "inference"
+    / "generate_predictions_table.py"
+)
 
 
 def get_python_executable() -> str:
@@ -50,7 +58,22 @@ def main() -> None:
     parser.add_argument(
         "--skip-trends",
         action="store_true",
-        help="Skip the Person 5 Historical Trend Analysis step.",
+        help="Skip historical trend analysis.",
+    )
+    parser.add_argument(
+        "--skip-cohort",
+        action="store_true",
+        help="Skip cohort analysis.",
+    )
+    parser.add_argument(
+        "--skip-forecasting",
+        action="store_true",
+        help="Skip historical trend forecasting.",
+    )
+    parser.add_argument(
+        "--skip-predictions",
+        action="store_true",
+        help="Skip generating the customer churn predictions table.",
     )
     parser.add_argument(
         "--train-logistic",
@@ -83,10 +106,22 @@ def main() -> None:
         FEATURES_DIR / "feature_selection_and_scaling.py",
     )
 
+    if not args.skip_cohort:
+        run_step(
+            "Customer Cohort Analysis",
+            ANALYTICS_DIR / "cohort_analysis.py",
+        )
+
     if not args.skip_trends:
         run_step(
-            "Historical Trend Analysis (Person 5 - Schema 6.5)",
+            "Historical Trend Analysis",
             TRENDS_DIR / "pipeline.py",
+        )
+
+    if not args.skip_forecasting:
+        run_step(
+            "Historical Trend Forecasting",
+            FORECASTING_DIR / "forecasting.py",
         )
 
     if args.train_all:
@@ -101,14 +136,25 @@ def main() -> None:
         if args.train_lightgbm:
             run_step("Training LightGBM model", ML_DIR / "train_lightgbm_model.py")
 
+    if not args.skip_predictions:
+        run_step(
+            "Generating customer churn predictions",
+            PREDICTIONS_SCRIPT,
+        )
+
     print("\nPipeline complete.")
-    print("Model-ready tables and Schema 6.5 trends created in MySQL:")
+    print("Model-ready, analytics, forecast, and prediction tables created in MySQL:")
     print("- model_ready_train")
     print("- model_ready_val")
     print("- model_ready_test")
     print("- historical_revenue_trend (Schema 6.5)")
     print("- historical_churn_trend (Schema 6.5)")
     print("- historical_trend_combined (Schema 6.5)")
+    print("- customer_cohort_analysis")
+    print("- forecast_revenue_trend")
+    print("- forecast_churn_trend")
+    print("- forecast_trend_combined")
+    print("- churn_predictions")
 
 
 if __name__ == "__main__":

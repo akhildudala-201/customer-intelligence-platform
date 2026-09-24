@@ -258,15 +258,35 @@ The pipeline script [`scripts/run_pipeline.py`](./scripts/run_pipeline.py) orche
 
 ### 2. Run the complete pipeline
 
-This command builds the feature tables, trains both models, runs imbalance
-experiments, performs threshold analysis and model comparison, calibrates
-LightGBM, then stops after calibration:
+This command builds the feature tables, runs cohort analysis, historical trend
+analysis and forecasting, trains both models, runs imbalance experiments,
+performs threshold analysis and model comparison, calibrates LightGBM, and
+refreshes the customer churn predictions table:
 
 ```bash
 .venv/bin/python scripts/run_pipeline.py --skip-ingest --train-all
 ```
 
-The prediction-table refresh is a separate command documented in step 5.
+By default, the pipeline runs the complete analytics workflow. Individual
+stages can be skipped when their inputs or outputs are already available:
+
+```bash
+.venv/bin/python scripts/run_pipeline.py --skip-cohort
+.venv/bin/python scripts/run_pipeline.py --skip-trends
+.venv/bin/python scripts/run_pipeline.py --skip-forecasting
+.venv/bin/python scripts/run_pipeline.py --skip-predictions
+```
+
+The full pipeline creates or refreshes these analytics tables:
+
+- `customer_cohort_analysis`
+- `historical_revenue_trend`
+- `historical_churn_trend`
+- `historical_trend_combined`
+- `forecast_revenue_trend`
+- `forecast_churn_trend`
+- `forecast_trend_combined`
+- `churn_predictions`
 
 ### 3. Run only the ML pipeline
 
@@ -292,8 +312,8 @@ The ML-only pipeline includes:
 - Model comparison
 - LightGBM calibration
 
-It does **not** refresh `churn_predictions`. Run the batch scoring command in
-step 5 when that table needs to be updated.
+It does not run cohort analysis, historical trends, forecasting, or batch
+prediction generation. Use `scripts/run_pipeline.py` for the complete workflow.
 
 ### 4. Run individual ML modules
 
@@ -390,8 +410,9 @@ This job reads every eligible customer from `features_encoded`, generates
 churn probabilities, SHAP values, and reason codes, and replaces the
 `churn_predictions` table.
 
-The prediction-table job is intentionally not run by `run_pipeline.py`.
-Run it separately when a full `churn_predictions` refresh is intended.
+The prediction-table job is also run automatically by `scripts/run_pipeline.py`
+after model training and calibration. Run the module separately only when a
+standalone prediction refresh is needed.
 
 ---
 
@@ -418,60 +439,6 @@ Run the full automated test suite:
 pytest
 ```
 *Current test suite: **320/320 tests passing** across feature engineering, database pipelines, cohort analysis, class imbalance handling, Logistic Regression, and LightGBM model contracts.*
-
-## Cohort Analysis
-
-The standalone [`cohort_analysis.py`](app/segmentation/customer_analytics/cohort_analysis.py) module builds
-the scoped Olist extract and writes `customer_cohort_analysis`. It joins
-`customers -> orders -> order_payments` using `customer_unique_id`, sums multiple
-payment rows per order, and intentionally keeps one row per customer-order for
-relative-month activity.
-It also joins the existing `customer_churn_labels` table and excludes censored
-customers locally before calculating cohort churn.
-
-Run it against the configured project database:
-
-```bash
-python -m app.segmentation.customer_analytics.cohort_analysis
-```
-
-The module reads `customers`, `orders`, and `order_payments` through
-`app.Database.database.engine`, using the existing `DB_*` settings in `.env`.
-Use `--database-url` only to override that configured connection. The
-`--data-dir` option remains available for isolated CSV fixtures and tests; it
-is not the normal production input path.
-
-The output contains `cohort`, `relative_month` (`M0`, `M1`, ...),
-`retention_rate (%)`, `repeat_purchase_rate (%)`,
-`cumulative_repeat_purchase_rate (%)`, `cumulative_average_revenue`,
-`final_churn_rate (%)`, `monthly_churn_rate (%)`,
-`cumulative_churn_rate (%)`, and `generated_date`.
-`repeat_purchase_rate (%)` is the percentage of customers whose second purchase
-occurred during that exact relative month. `cumulative_repeat_purchase_rate (%)`
-is the percentage whose second purchase occurred by that relative month.
-`final_churn_rate (%)` is the final cohort-level rate from the project
-label convention (`label=1` means churned) and the existing `censored` flag;
-censored customers are excluded from this cohort output only.
-`monthly_churn_rate (%)` estimates churn timing by assigning a labeled churned
-customer's event to the calendar month when the canonical 180-day inactivity
-window expires, then dividing events by customers still at risk at the start of
-each relative month. It is a monthly hazard estimate; it is not a direct
-observed churn date.
-`cumulative_churn_rate (%)` divides all churn events through the current
-relative month by the initial eligible at-risk population.
-`cumulative_average_revenue` is the cumulative revenue generated through each
-relative month divided by the original cohort size, so it is non-decreasing
-over the customer lifecycle. It is realized revenue per acquired customer,
-not a predicted lifetime value.
-
-The default local eligibility rule is `min_orders=1`: every purchaser with a
-valid purchase timestamp is retained, including one-time customers so M0 is
-interpretable and repeat rate is measurable. Callers may pass
-`--min-orders 2` for a repeat-capable-only cohort view; this filter affects only
-this module and never drops customers from segmentation, risk, or campaign
-datasets. When the canonical merged dataset is available, reconcile its payment
-aggregation, timestamp validity rules, and any `min_orders` threshold against
-this scoped extract before replacing it.
 
 ---
 
