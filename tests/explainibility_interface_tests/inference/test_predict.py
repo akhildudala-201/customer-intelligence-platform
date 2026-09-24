@@ -106,14 +106,14 @@ def test_feature_validation_reorders_columns(sample_customer_df):
 
 def test_reason_codes_load_successfully():
     config = load_reason_codes(DEFAULT_REASON_CODES_PATH)
-    assert "RC05" in config
-    assert config["RC05"]["feature"] == "has_bad_review"
+    assert "RC02" in config
+    assert config["RC02"]["feature"] == "has_bad_review"
 
 
 def test_top_n_reason_code_selection():
     config = load_reason_codes(DEFAULT_REASON_CODES_PATH)
     shap_values = {
-        "has_bad_review": 0.9,  # positive -> RC05
+        "has_bad_review": 0.9,  # positive -> RC02
         "avg_payment_installments": -0.5,  # unmapped feature (any direction) -> not selected
         "avg_delivery_days": 0.01,  # small magnitude, should not be selected
         "monetary_value": 0.02,  # not mapped to any reason code
@@ -123,9 +123,9 @@ def test_top_n_reason_code_selection():
         "is_delayed_delivery": 0.0,
     }
 
-    codes = select_top_reason_codes(shap_values, config, top_n=2)
+    codes = select_top_reason_codes(shap_values, config, top_n=1)
 
-    assert codes == ["RC05"]
+    assert codes == ["RC02"]
 
 
 def test_reason_code_direction_filter_matches_predicted_outcome():
@@ -134,15 +134,15 @@ def test_reason_code_direction_filter_matches_predicted_outcome():
     restricts candidates to same-sign (risk-increasing) SHAP features."""
     config = load_reason_codes(DEFAULT_REASON_CODES_PATH)
     shap_values = {
-        "avg_delivery_days": -2.26,  # biggest |SHAP|, but risk-LOWERING (mapped: RC07B)
-        "freight_ratio": 1.07,  # smaller |SHAP|, risk-INCREASING (mapped: RC06)
+        "avg_delivery_days": -2.26,  # biggest |SHAP|, but risk-LOWERING (mapped: RC04B)
+        "freight_ratio": 1.07,  # smaller |SHAP|, risk-INCREASING (mapped: RC03)
         "has_bad_review": -0.24,
     }
 
     # Without a direction filter, the biggest driver wins regardless of
     # sign -- even though it contradicts a predicted-churn outcome.
     unfiltered = select_top_reason_codes(shap_values, config, top_n=1)
-    assert unfiltered == ["RC07B"]
+    assert unfiltered == ["RC04B"]
 
     # With predicted_positive=True (model predicts this customer WILL
     # churn), only risk-increasing drivers are eligible -- freight_ratio,
@@ -150,7 +150,7 @@ def test_reason_code_direction_filter_matches_predicted_outcome():
     filtered = select_top_reason_codes(
         shap_values, config, top_n=1, predicted_positive=True
     )
-    assert filtered == ["RC06"]
+    assert filtered == ["RC03"]
 
 
 def test_reason_code_selection_skips_unmapped_features():
