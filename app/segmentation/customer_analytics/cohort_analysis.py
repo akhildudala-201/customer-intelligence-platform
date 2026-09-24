@@ -39,7 +39,7 @@ CSV_FILES = {
 
 def _customer_intelligence_repository() -> Any:
     """Load the companion repository only when its functions are requested."""
-    from app.segmentation.customer_analytics import customer_intelligence_repository
+    from app.segmentation.customer_intelligence.data_access import customer_intelligence_repository
 
     return customer_intelligence_repository
 
