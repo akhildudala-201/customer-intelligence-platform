@@ -1,0 +1,117 @@
+
+version: 1
+
+risk_tiers: [High Risk, Medium Risk, Low Risk]      # from Risk Tier Classification, schema 6.1 — confirmed against risk_tier/classifier.py's output
+value_tiers: [High, Medium, Low]     # from CLV Calculation — confirmed against clv_calculator.py's value_tier output
+
+segments:                            # the 3 segments the pipeline actually produces at k=3
+  - High-Value Satisfied Repeat Buyers
+  - Satisfied One-Time Buyers
+  - Product-Dissatisfied One-Time Buyers
+
+reason_codes:
+  RC00: "General Engagement — no specific pattern matched this customer (average spend, no complaint on file, no repeat purchase history), so they get our standard, low-cost engagement touchpoint to stay on their radar."
+  RC01: "Priority Retention — a repeat buyer (multiple past orders) with high total spend, currently at elevated churn risk. Worth a personal outreach before we lose them, not a generic email."
+  RC02: "Quality Recovery — this customer left a poor review or flagged a bad product experience. The campaign should acknowledge that issue directly, not offer a generic discount."
+  RC03: "Loyalty Reward — a repeat buyer with high total spend who is currently satisfied and at low churn risk. Reward their loyalty with recognition or early access, since discounting a customer who wasn't going to leave just costs us margin."
+  RC04: "Repeat Purchase Prompt — a satisfied customer on their first order, with no complaints on file. The goal is simply to earn a second purchase while the experience is still fresh and positive."
+
+default_rule:
+  campaign_name: "Standard Customer Engagement Program"  # (a general, low-cost touchpoint for customers with no specific pattern to act on)
+  campaign_priority: 5
+  reason_code: RC00
+
+rules:
+  # -- High-Value Satisfied Repeat Buyers (segment_id 0 — our best customers, 3.5% of base) --
+  - risk_tier: High Risk
+    segment: High-Value Satisfied Repeat Buyers
+    value_tier: High
+    campaign_name: "Executive Retention Outreach"  # (a senior team member personally contacts this customer to keep them from leaving)
+    campaign_priority: 1
+    reason_code: RC01
+
+  - risk_tier: High Risk
+    segment: High-Value Satisfied Repeat Buyers
+    value_tier: Medium
+    campaign_name: "Priority Retention Outreach"  # (we proactively reach out to this customer before they churn)
+    campaign_priority: 1
+    reason_code: RC01
+
+  - risk_tier: High Risk
+    segment: High-Value Satisfied Repeat Buyers
+    value_tier: Low
+    campaign_name: "Retention Engagement Call"  # (a follow-up phone call to keep this customer engaged)
+    campaign_priority: 2
+    reason_code: RC01
+
+  - risk_tier: Medium Risk
+    segment: High-Value Satisfied Repeat Buyers
+    value_tier: High
+    campaign_name: "Loyalty Rewards Program"  # (we reward this loyal customer with perks, not a discount)
+    campaign_priority: 2
+    reason_code: RC03
+
+  - risk_tier: Low Risk
+    segment: High-Value Satisfied Repeat Buyers
+    value_tier: High
+    campaign_name: "VIP Loyalty Recognition Program"  # (we recognize our best, most loyal customers with special treatment)
+    campaign_priority: 3
+    reason_code: RC03
+
+  # -- Satisfied One-Time Buyers (segment_id 1 — 80% of the customer base) --
+  - risk_tier: High Risk
+    segment: Satisfied One-Time Buyers
+    value_tier: High
+    campaign_name: "Repeat Purchase Incentive Program"  # (we offer an incentive to encourage a second purchase)
+    campaign_priority: 2
+    reason_code: RC04
+
+  - risk_tier: High Risk
+    segment: Satisfied One-Time Buyers
+    value_tier: Medium
+    campaign_name: "Second Purchase Reminder Campaign"  # (an email reminding the customer to shop again)
+    campaign_priority: 3
+    reason_code: RC04
+
+  - risk_tier: High Risk
+    segment: Satisfied One-Time Buyers
+    value_tier: Low
+    campaign_name: "Second Purchase SMS Campaign"  # (a text message nudging the customer to shop again)
+    campaign_priority: 4
+    reason_code: RC04
+
+  - risk_tier: Medium Risk
+    segment: Satisfied One-Time Buyers
+    value_tier: Medium
+    campaign_name: "Second Purchase Follow-Up Campaign"  # (a follow-up email encouraging a second purchase)
+    campaign_priority: 4
+    reason_code: RC04
+
+  # -- Product-Dissatisfied One-Time Buyers (segment_id 2 — 16.4% of the base) --
+  - risk_tier: High Risk
+    segment: Product-Dissatisfied One-Time Buyers
+    value_tier: High
+    campaign_name: "Priority Service Recovery Call"  # (a phone call to personally resolve this customer's product issue)
+    campaign_priority: 1
+    reason_code: RC02
+
+  - risk_tier: High Risk
+    segment: Product-Dissatisfied One-Time Buyers
+    value_tier: Medium
+    campaign_name: "Quality Recovery Outreach Campaign"  # (we reach out to directly address a product quality complaint)
+    campaign_priority: 2
+    reason_code: RC02
+
+  - risk_tier: High Risk
+    segment: Product-Dissatisfied One-Time Buyers
+    value_tier: Low
+    campaign_name: "Product Concern Follow-Up Campaign"  # (a follow-up email addressing the customer's product complaint)
+    campaign_priority: 3
+    reason_code: RC02
+
+  - risk_tier: Medium Risk
+    segment: Product-Dissatisfied One-Time Buyers
+    value_tier: Medium
+    campaign_name: "Customer Satisfaction Check-In"  # (a quick check-in to confirm the customer's issue was resolved)
+    campaign_priority: 3
+    reason_code: RC02
