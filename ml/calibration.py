@@ -214,12 +214,7 @@ class IsotonicCalibration:
 
 
 class CalibratedChurnModel:
-    """Wraps a fitted base churn model with a probability calibrator and threshold.
-
-    This is the artifact Person 6 should load for predict() / churn_predictions:
-    it exposes the same predict_proba()/predict() interface as the base models,
-    but returns calibrated probabilities and applies the recalibrated threshold.
-    """
+   
 
     # Matches build_churn_label.py's / _LGBAdapter's convention: label 1 =
     # churned. Only used to annotate the saved artifact's metadata (see
@@ -319,23 +314,7 @@ def load_recommended_tune_metric(
     reports_dir: Path,
     default_metric: str = "balanced_accuracy",
 ) -> str:
-    """Determine which metric to re-tune the post-calibration threshold against.
-
-    This defers to Person 4's threshold_analysis.py output rather than
-    hardcoding a choice:
-      1. Prefer app/ml/outputs/reports/best_threshold_comparison_val.csv -- pick the
-         metric where LightGBM beats Logistic Regression by the widest margin
-         (column 'better' == 'LightGBM', ranked by 'score_gap'). This reflects
-         Person 4's head-to-head model comparison, not just LightGBM in isolation.
-      2. Fall back to app/ml/outputs/reports/best_thresholds_LightGBM_val.csv -- pick
-         the metric with LightGBM's highest achievable validation score.
-      3. If neither file exists yet (threshold_analysis.py hasn't been run),
-         fall back to `default_metric` with a warning.
-
-    Any metric name recovered from disk is validated against
-    SUPPORTED_TUNE_METRICS before use, in case that file ever contains a
-    metric find_optimal_threshold() doesn't recognize.
-    """
+   
     comparison_path = reports_dir / "best_threshold_comparison_val.csv"
     lgbm_only_path = reports_dir / "best_thresholds_LightGBM_val.csv"
 
@@ -407,13 +386,7 @@ def compare_calibration_methods(
     y_val: pd.Series,
     n_bins: int = 10,
 ) -> Tuple[pd.DataFrame, Dict[str, Optional[Union[PlattScaling, IsotonicCalibration]]]]:
-    """Fit sigmoid and isotonic calibrators on validation data, score all three variants.
-
-    Returns a comparison table (uncalibrated / sigmoid / isotonic) scored by
-    Brier score, log loss, ECE and MCE — all on the SAME validation split the
-    calibrators were fit on (this is a diagnostic comparison; the honest,
-    unbiased final numbers come from evaluate_on_test() on the held-out test set).
-    """
+   
     y_val_arr = np.asarray(y_val).astype(int)
     raw_val_probs = base_model.predict_proba(X_val)
 
@@ -444,30 +417,7 @@ def calibrate_model(
     n_bins: int = 10,
     tune_metric: str = "balanced_accuracy",
 ) -> Tuple[CalibratedChurnModel, pd.DataFrame]:
-    """Run the full calibration workflow for one base model.
-
-    1. Compare uncalibrated / sigmoid / isotonic on validation (by Brier score).
-    2. Select the best method (falls back to 'none' if calibration doesn't help).
-    3. Re-tune the decision threshold on the CALIBRATED validation probabilities,
-       against `tune_metric` (sourced from Person 4's threshold analysis by the
-       caller -- see load_recommended_tune_metric()).
-    4. Return a ready-to-use CalibratedChurnModel.
-
-    METHODOLOGY NOTE: both the calibrators (step 1) and the method-selection
-    decision (step 2) use the SAME validation split -- Platt/Isotonic are fit
-    on (X_val, y_val), then compared against each other on (X_val, y_val)
-    again. This is standard for calibration (calibrators need to be fit on
-    data the base model wasn't trained on, which val already satisfies), but
-    choosing the "best" method by its own in-sample validation score is a
-    mild form of model-selection overfitting -- it doesn't leak into the
-    base LightGBM model, but it can optimistically favor whichever method
-    happens to fit validation-set noise slightly better. evaluate_on_test()
-    reports final metrics on the untouched TEST split specifically so this
-    optimism doesn't reach the final reported numbers. A stricter approach
-    (cross-validated calibrator selection) would remove even this mild bias,
-    at the cost of real added complexity -- left as a known limitation
-    rather than implemented, given the scope of this project.
-    """
+    
     banner(f"CALIBRATING: {model_name}")
 
     comparison_df, calibrators = compare_calibration_methods(base_model, X_val, y_val, n_bins=n_bins)
@@ -571,24 +521,6 @@ def evaluate_on_test(
 # ---------------------------------------------------------------------------
 
 class _LGBAdapter:
-    """Wraps a raw sklearn/lightgbm estimator so it exposes the same
-    predict_proba(X) -> 1D array interface as ChurnLightGBM, already
-    oriented to P(churn_label == CHURN_TARGET_VALUE) regardless of which
-    original label train_lightgbm_model.py's auto-selected POSITIVE_CLASS
-    resolved to for this training run.
-
-    Without this, if POSITIVE_CLASS auto-detection picked the minority
-    label (very likely 0/"retained" on this dataset, since churn_label=1
-    is the majority class — see model_comparison.py's module docstring
-    for the same issue), the raw model's predict_proba(X)[:, 1] would be
-    P(retained), and everything downstream (calibration, threshold
-    tuning, the final saved artifact) would silently calibrate/tune/serve
-    the WRONG target. Correcting it once, here, at calibration time means
-    the final CalibratedChurnModel artifact is guaranteed to already be
-    oriented correctly — nothing downstream (model_adapter.py) needs to
-    re-check or re-invert it.
-    """
-
     CHURN_TARGET_VALUE = 1
 
     def __init__(self, sk_model, feature_cols, positive_class=None):
@@ -614,16 +546,6 @@ class _LGBAdapter:
 
 
 def load_latest_lightgbm_model() -> Optional[Any]:
-    """Load the most recently saved LightGBM TRAINING artifact from app/ml/outputs/models/, if any.
-
-    Excludes '*_calibrated.joblib' files (this module's own output) so that
-    re-running calibration never tries to load its own previous output back
-    in as if it were a fresh base model. Corrupt or wrong-schema files are
-    skipped with a warning rather than crashing the whole pipeline -- but a
-    missing or invalid `positive_class` on an otherwise well-formed
-    artifact raises immediately rather than being skipped or defaulted,
-    since there's no safe way to guess probability orientation (see below).
-    """
     model_dir = Path(CONFIG["OUTPUT_MODEL_DIR"])
     candidates = sorted(
         p for p in model_dir.glob("lgb_churn_model_*.joblib")
@@ -685,16 +607,6 @@ def load_latest_lightgbm_model() -> Optional[Any]:
 # ---------------------------------------------------------------------------
 
 def main():
-    """Calibrate the LightGBM model only, evaluate, and save the final artifact.
-
-    LightGBM was selected as the production model (it outperforms the
-    Logistic Regression baseline on every metric — F1, ROC-AUC, PR-AUC —
-    after calibration), so this pipeline calibrates LightGBM exclusively.
-
-    The threshold re-tuning objective is sourced from Person 4's
-    threshold_analysis.py output rather than hardcoded here -- see
-    load_recommended_tune_metric().
-    """
     banner("CALIBRATION PIPELINE (LightGBM only)")
 
     log_message("Loading data from database...")
