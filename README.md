@@ -418,27 +418,54 @@ standalone prediction refresh is needed.
 
 ## Expected Table Outputs in MySQL
 
-A successful pipeline run creates the following validated relational tables:
+A successful pipeline run creates or refreshes the following relational tables.
+Row counts depend on the source snapshot, cleaning rules, observation window,
+and model eligibility filters, so the values below describe the expected
+contents rather than fixed production counts.
 
 | Stage | Table | Description | Rows | Columns |
 | :--- | :--- | :--- | :---: | :---: |
-| Features | `customer_features` | Raw customer behavioral aggregations | 96,096 | 28 |
-| Labels | `customer_churn_labels` | Churn flags derived from observation window | 96,095 | 5 |
-| Merge | `customer_features_with_labels` | Joined features and targets | 96,095 | 32 |
-| Encode | `features_encoded` | Frequency encoded & transformed features | 96,095 | 32 |
-| Split | `model_ready_train` | 70% temporal train set (15 features + label + id) | 48,232 | 17 |
-| Split | `model_ready_val` | 15% validation set for threshold tuning | 10,335 | 17 |
-| Split | `model_ready_test` | 15% unseen test set for final reporting | 10,337 | 17 |
+| Features | `customer_features` | Customer behavioral aggregations | Source-dependent | 28 |
+| Labels | `customer_churn_labels` | Churn flags derived from the observation window | Source-dependent | 5 |
+| Merge | `customer_features_with_labels` | Joined features and targets | Source-dependent | 32 |
+| Encode | `features_encoded` | Frequency-encoded and transformed features | Source-dependent | 32 |
+| Split | `model_ready_train` | Temporal training split | Source-dependent | 17 |
+| Split | `model_ready_val` | Validation split for threshold tuning | Source-dependent | 17 |
+| Split | `model_ready_test` | Unseen test split for final reporting | Source-dependent | 17 |
+| Cohort | `customer_cohort_analysis` | Retention, repeat purchase, revenue, and churn by cohort and relative month | Cohort/month-dependent | 10 |
+| Trends | `historical_revenue_trend` | Historical revenue trend by configured granularity | Source-dependent | Schema 6.5 |
+| Trends | `historical_churn_trend` | Historical churn trend by configured granularity | Source-dependent | Schema 6.5 |
+| Trends | `historical_trend_combined` | Combined historical revenue and churn trends | Source-dependent | Schema 6.5 |
+| Forecast | `forecast_revenue_trend` | Forecast revenue values and intervals | Horizon-dependent | Forecast schema |
+| Forecast | `forecast_churn_trend` | Forecast churn values and intervals | Horizon-dependent | Forecast schema |
+| Forecast | `forecast_trend_combined` | Combined revenue and churn forecasts | Horizon-dependent | Forecast schema |
+| Predictions | `churn_predictions` | Eligible-customer probabilities, SHAP values, and reason codes | Eligible customers | Prediction schema |
 
 ---
 
 ## Testing
 
-Run the full automated test suite:
+Run the full automated test suite from the repository root:
+
 ```bash
 pytest
 ```
-*Current test suite: **320/320 tests passing** across feature engineering, database pipelines, cohort analysis, class imbalance handling, Logistic Regression, and LightGBM model contracts.*
+
+The suite currently contains 23 test modules covering ingestion and cleaning,
+feature engineering, database access, cohort analysis, forecasting, historical
+trends, class-imbalance handling, Logistic Regression, LightGBM, calibration,
+and the explainability/prediction interface. Use focused runs while developing:
+
+```bash
+pytest tests/test_cohort_analysis.py
+pytest tests/test_trend_analysis.py tests/test_forecasting.py
+pytest tests/explainibility_interface_tests/
+```
+
+The complete suite requires the dependencies in the project environment,
+including the explainability stack. If collection reports a missing optional
+dependency such as `shap`, install the project dependencies before interpreting
+the result as a test failure.
 
 ---
 
