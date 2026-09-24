@@ -1,0 +1,15 @@
+# Risk Tier Classification thresholds
+#
+# Business rule (Risk_Tier_Classification.docx):
+#   0.00-0.39 -> Low Risk
+#   0.40-0.69 -> Medium Risk
+#   0.70-1.00 -> High Risk
+#
+
+tiers:
+  - name: Low Risk
+    upper_bound: 0.39
+  - name: Medium Risk
+    upper_bound: 0.69
+  - name: High Risk
+    upper_bound: 1.00
