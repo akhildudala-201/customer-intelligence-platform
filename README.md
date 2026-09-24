@@ -1,6 +1,6 @@
 # Customer Intelligence Platform
 
-A production backend platform for customer intelligence — churn prediction, customer segmentation, and targeted retention marketing — built on the Olist Brazilian e-commerce dataset.
+A backend platform for customer intelligence — churn prediction, customer segmentation, and targeted retention marketing — built on the Olist Brazilian e-commerce dataset.
 
 This repository implements the end-to-end data pipeline and machine learning layer: CSV ingestion → cleaned MySQL tables → engineered behavioral features → churn labels → encoded & scaled model-ready splits → class imbalance handling → LightGBM and Logistic Regression → calibration → SHAP explainability → customer-level predictions for segmentation.
 
@@ -11,13 +11,11 @@ This repository implements the end-to-end data pipeline and machine learning lay
 Using the Olist E-Commerce dataset, the platform:
 
 - Cleans and loads 8 raw CSVs into relational MySQL tables.
-- Engineers 15 non-leaking, high-impact behavioral features (checkout freight burden, product weight, RFM monetary spend, review engagement, logistics delay, category frequencies, and payment preferences).
+- Engineers behavioral features spanning payment, review, product, freight, delivery, category, and geographic signals. The final model feature set is selected from the training split and is recorded with each model artifact.
 - Derives customer churn labels using a configurable return-window rule (`label_config.yaml`).
 - Encodes and scales features into time-split `model_ready_train`, `model_ready_val`, and `model_ready_test` tables.
-- Benchmarks 8 class imbalance strategies (cost-sensitive loss weighting vs. resampling) to handle the 30.26:1 churn skew.
-- Trains production-grade churn classifiers:
-  - **LightGBM**: Bayesian hyperparameter-tuned tree ensemble achieving **`0.9492 ROC-AUC`** and **`13.2x Lift`** on top 5% risk slice.
-  - **Logistic Regression**: High-precision baseline achieving **`0.8770 ROC-AUC`** and **`80.61% Balanced Accuracy`** with odds-ratio interpretability.
+- Benchmarks 8 class-imbalance strategies (cost-sensitive weighting and resampling) for a 30.26:1 churned-to-retained class ratio.
+- Trains LightGBM and Logistic Regression churn classifiers, with threshold analysis, calibration, and odds-ratio interpretability for the logistic baseline.
 - Tracks data drift across temporal splits using Population Stability Index (PSI).
 - Automatically logs all training runs, thresholds, and confusion matrix metrics to centralized experiment trackers.
 
@@ -25,18 +23,27 @@ Using the Olist E-Commerce dataset, the platform:
 
 ## Model Performance Benchmarks
 
-Evaluated on the unseen test set (10,337 customers, 5.82% minority base rate):
+The following held-out test metrics come from the current model comparison. Both
+models use **churn (`churn_label = 1`) as the positive class**, and their
+operating thresholds are tuned on the validation split before final evaluation.
 
-| Model | ROC-AUC | PR-AUC (Avg Prec) | Operating Threshold | Precision | Recall | Balanced Acc | Lift over Random | Primary Use Case |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **LightGBM** | **`0.9492`** | **`0.7661`** | `Rate Mode (Top 5%)` | **`74.85%`** | **`64.29%`** | — | **`12.85x`** | **Automated Retention Targeting** |
-| **Logistic Regression** | **`0.8770`** | **`0.9892`** | `0.59 (Val-tuned)` | **`99.19%`** | **`70.53%`** | **`80.61%`** | — | **Auditable Strategic Insights** |
+| Model | ROC-AUC | PR-AUC (Avg Prec) | Precision | Recall | Balanced Acc | Primary Use Case |
+| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **LightGBM** | **`0.9492`** | **`0.9956`** | **`99.12%`** | **`88.64%`** | **`87.92%`** | Automated churn-risk targeting |
+| **Logistic Regression** | **`0.8770`** | **`0.9892`** | **`99.19%`** | **`70.53%`** | **`80.61%`** | Auditable strategic insights |
+
+The LightGBM training artifact also reports a top-5% *retention* segment, where
+the positive class is retained customers (`churn_label = 0`). Do not compare
+those retention-segment metrics directly with the churn metrics above.
 
 ---
 
-## Engineered Behavioral Features (15 Features)
+## Current Model Feature Contract (13 Features)
 
-All features are engineered strictly from the observation window before the temporal split to eliminate target leakage:
+The current deployed LightGBM artifact expects the 13 model-ready features
+below. Their values must use the same encoding and scaling applied during
+training. Feature selection can change this contract after retraining, so
+update this list whenever a new artifact is deployed.
 
 | # | Feature Name | Type | Description / Business Intuition |
 | :-: | :--- | :---: | :--- |
@@ -53,9 +60,6 @@ All features are engineered strictly from the observation window before the temp
 | 11 | `dominant_product_category_frequency` | Continuous | Frequency encoding of the customer's primary product category |
 | 12 | `customer_city_state_frequency` | Continuous | Frequency encoding of customer geographic location (captures logistics density) |
 | 13 | `preferred_payment_type_debit_card` | Binary (0/1) | One-hot encoded payment preference: Debit Card |
-| 13 | `preferred_payment_type_boleto` | Binary (0/1) | One-hot encoded payment preference: Boleto |
-| 14 | `preferred_payment_type_debit_card` | Binary (0/1) | One-hot encoded payment preference: Debit Card |
-| 15 | `preferred_payment_type_voucher` | Binary (0/1) | One-hot encoded payment preference: Voucher |
 
 ---
 
@@ -65,7 +69,7 @@ All features are engineered strictly from the observation window before the temp
 - **Total Training Samples**: 48,232 customers
 - **Retained Customers (Class 0 / Minority)**: 1,543 (3.20%)
 - **Churned Customers (Class 1 / Majority)**: 46,689 (96.80%)
-- **Imbalance Ratio**: **30.26 : 1**
+- **Class Ratio**: **30.26 : 1** churned-to-retained
 - **Theoretical 'Balanced' Weights**: Class 0 = `15.6293x`, Class 1 = `0.5165x` (effective penalty ratio: **30.26x** on minority errors).
 - **Core Implication**: A naive classifier achieves 96.8% accuracy simply by predicting every customer churns, resulting in **0.0% recall** on retained customers. Cost-sensitive loss weighting or threshold tuning is mandatory.
 
@@ -98,11 +102,9 @@ Evaluated across cost-sensitive weights and resampling techniques:
 | **Oversampling (1:1)** | 0.85 | 0.8568 | 93.5% | 20.7% | 77.8% | 0.9442 | 0.9954 |
 
 ### 4. Key Takeaways
-1. **Cost-Sensitive Loss Weighting > Resampling**:
-   - Random undersampling discards up to **95% of the majority class data**, severely destroying sample variance and boundary fidelity.
-   - Oversampling duplicates minority records, causing tree ensembles to memorize specific repeated samples.
-   - Cost-sensitive loss weighting retains 100% of data while penalizing minority class misclassifications appropriately.
-2. **Threshold Tuning is Crucial**: Post-hoc probability threshold search on validation PR curves yields dramatic improvements in balanced accuracy and minority recall without altering the underlying probability geometry.
+1. **Select a strategy by the target operating metric.** In this run, the unweighted LightGBM baseline with threshold tuning produced the strongest balanced accuracy (`0.8822`), while other strategies trade retained-customer recall, churn recall, and precision differently.
+2. **Threshold tuning is part of model selection.** Thresholds are chosen on the validation split; the test set is reserved for final reporting.
+3. **Keep the target class explicit.** The benchmark tables report retained-customer and churn recall separately, and PR-AUC is calculated for the stated positive class.
 
 ---
 
@@ -114,11 +116,11 @@ Evaluated across cost-sensitive weights and resampling techniques:
 | **Data & Feature Engineering** | Pandas, NumPy, scikit-learn | Cleaning, aggregation, frequency encoding, RobustScaler |
 | **Database** | MySQL 8.x, SQLAlchemy, PyMySQL | Relational storage for raw, feature, and model-ready tables |
 | **Machine Learning** | LightGBM, scikit-learn | Gradient boosted trees and cost-sensitive logistic regression |
-| **Hyperparameter Tuning** | Optuna (TPE Sampler) | 5-Fold Stratified Bayesian optimization on PR-AUC |
+| **Hyperparameter Tuning** | Optuna (TPE Sampler) | Optional 5-fold stratified optimization on PR-AUC |
 | **Data Drift & Monitoring** | Population Stability Index (PSI) | Tracking feature & score stability across Train/Val/Test |
 | **Model Persistence** | Joblib | Production bundle packaging (`.joblib` & `.json` metadata) |
 | **Explainability & Serving** | SHAP, FastAPI, Uvicorn | Feature contributions and HTTP prediction API |
-| **Testing** | Pytest | 169 automated tests |
+| **Testing** | Pytest | Automated unit and integration test suite |
 
 ---
 
@@ -128,11 +130,7 @@ Evaluated across cost-sensitive weights and resampling techniques:
 | :--- | :--- | :--- |
 | Data Engineering | Ingestion, Cleaning & MySQL Schema | Yashaswi |
 | Feature Engineering | RFM, Product, Review & Fulfillment Features | Lohit |
-| Machine Learning (Person 1) | Logistic Regression Modeling & Odds Ratios | Kalyan |
-| Machine Learning (Person 2) | LightGBM Modeling & Optuna Tuning | Team Member 2 |
-| Machine Learning (Person 3) | Class Imbalance Experiments & Handling | Lohith Narayana |
-| Evaluation & Thresholds (Person 4) | Metric Suites & Optimization Thresholds | Team Member 4 |
-| Probability Calibration (Person 5) | Reliability Curves & Calibration | Team Member 5 |
+| Machine Learning | Logistic Regression Modeling & Odds Ratios | Kalyan |
 | Segmentation & Campaigns | Customer Clustering & Marketing Slices | Kuushalie |
 | FastAPI & Integration | Serving APIs & Dashboard Integration | Rajeswari |
 
@@ -165,8 +163,11 @@ customer-intelligence-platform/
 │   │   ├── run_calibration.py             # Calibration entry point
 │   │   ├── experiment_logger.py            # Centralized CSV/Markdown experiment tracker
 │   │   └── explainibility_inference/      # API, inference, SHAP, reason codes, batch scoring
-│   └── config/
-│       └── label_config.yaml             # Configurable churn observation & return windows
+│   ├── config/
+│   │   ├── label_config.yaml             # Configurable churn observation & return windows
+│   │   └── trend_config.yaml             # Historical-trend configuration
+│   └── segmentation/
+│       └── customer_analytics/           # Cohort, trend, and forecasting pipelines
 ├── data/
 │   ├── Schema.sql                        # DDL schema with foreign keys and indexes
 │   └── olist_*.csv                       # Source raw CSVs
@@ -228,8 +229,8 @@ Copy `.env.example` to `.env` and configure your database credentials:
 cp .env.example .env
 ```
 Ensure `DB_USER`, `DB_PASSWORD`, `DB_NAME`, and `DATASET_DIR` are populated.
-After the training pipeline finishes calibration, set the model artifact path
-and version in the root `.env` file:
+If you will generate predictions, configure the model path and version before
+running the complete pipeline. Calibration writes the artifact to this path:
 
 ```env
 MODEL_PATH=outputs/models/lgb_churn_model_calibrated.joblib
@@ -237,8 +238,8 @@ MODEL_VERSION=v1
 ```
 
 `MODEL_PATH` may be relative to the repository root. Use the exact artifact
-created by calibration if its filename differs. `MODEL_VERSION` is the label
-stored with each prediction record.
+created by calibration if its filename differs. `MODEL_VERSION` is stored with
+each prediction record.
 
 ---
 
@@ -246,14 +247,14 @@ stored with each prediction record.
 
 The pipeline script [`scripts/run_pipeline.py`](./scripts/run_pipeline.py) orchestrates the entire workflow:
 
-### 1. Build the database and feature tables
+### 1. Build the database, feature, and analytics tables
 
 ```bash
-# Ingest the CSV files and build all feature/model-ready tables:
-.venv/bin/python scripts/run_pipeline.py
+# Ingest the CSV files and build all tables except churn predictions:
+.venv/bin/python scripts/run_pipeline.py --skip-predictions
 
-# Skip ingestion when the raw tables already exist:
-.venv/bin/python scripts/run_pipeline.py --skip-ingest
+# Skip ingestion when raw tables already exist:
+.venv/bin/python scripts/run_pipeline.py --skip-ingest --skip-predictions
 ```
 
 ### 2. Run the complete pipeline
@@ -267,8 +268,10 @@ refreshes the customer churn predictions table:
 .venv/bin/python scripts/run_pipeline.py --skip-ingest --train-all
 ```
 
-By default, the pipeline runs the complete analytics workflow. Individual
-stages can be skipped when their inputs or outputs are already available:
+By default, the pipeline runs ingestion, data preparation, analytics, and an
+attempt to refresh the predictions table. Use `--skip-predictions` unless a
+valid calibrated artifact and `MODEL_VERSION` are already configured. Individual
+analytics stages can be skipped when their inputs or outputs are already available:
 
 ```bash
 .venv/bin/python scripts/run_pipeline.py --skip-cohort
@@ -359,8 +362,10 @@ GET  /api/v1/predictions/{customer_unique_id}
 POST /api/v1/predictions/batch
 ```
 
-Use `/predictions/from-features` when the caller already has feature values
-and does not want the API to query MySQL. The request body has this shape:
+Use `/predictions/from-features` when the caller already has all 13 required
+model-ready feature values. The API does not transform raw customer data, so
+the supplied values must use the same encoding and scaling as the deployed
+model. The request body has this shape:
 
 ```json
 {
@@ -368,7 +373,19 @@ and does not want the API to query MySQL. The request body has this shape:
     {
       "customer_unique_id": "C001",
       "features": {
-        "monetary_value": 125.5
+        "monetary_value": 1.2,
+        "avg_payment_installments": 0.0,
+        "avg_review_score": 0.0,
+        "has_bad_review": 0,
+        "has_review_comment": 1,
+        "avg_product_weight_g": 0.4,
+        "freight_ratio": 0.1,
+        "avg_delivery_days": 0.2,
+        "avg_delivery_delay_days": 0.0,
+        "is_delayed_delivery": 0,
+        "dominant_product_category_frequency": 0.03,
+        "customer_city_state_frequency": 0.01,
+        "preferred_payment_type_debit_card": 1
       }
     }
   ]
@@ -419,27 +436,27 @@ standalone prediction refresh is needed.
 ## Expected Table Outputs in MySQL
 
 A successful pipeline run creates or refreshes the following relational tables.
-Row counts depend on the source snapshot, cleaning rules, observation window,
-and model eligibility filters, so the values below describe the expected
-contents rather than fixed production counts.
+Row and column counts depend on the source snapshot, cleaning rules, feature
+selection, observation window, and model eligibility filters, so the values
+below describe expected contents rather than a fixed schema.
 
-| Stage | Table | Description | Rows | Columns |
-| :--- | :--- | :--- | :---: | :---: |
-| Features | `customer_features` | Customer behavioral aggregations | Source-dependent | 28 |
-| Labels | `customer_churn_labels` | Churn flags derived from the observation window | Source-dependent | 5 |
-| Merge | `customer_features_with_labels` | Joined features and targets | Source-dependent | 32 |
-| Encode | `features_encoded` | Frequency-encoded and transformed features | Source-dependent | 32 |
-| Split | `model_ready_train` | Temporal training split | Source-dependent | 17 |
-| Split | `model_ready_val` | Validation split for threshold tuning | Source-dependent | 17 |
-| Split | `model_ready_test` | Unseen test split for final reporting | Source-dependent | 17 |
-| Cohort | `customer_cohort_analysis` | Retention, repeat purchase, revenue, and churn by cohort and relative month | Cohort/month-dependent | 10 |
-| Trends | `historical_revenue_trend` | Historical revenue trend by configured granularity | Source-dependent | Schema 6.5 |
-| Trends | `historical_churn_trend` | Historical churn trend by configured granularity | Source-dependent | Schema 6.5 |
-| Trends | `historical_trend_combined` | Combined historical revenue and churn trends | Source-dependent | Schema 6.5 |
-| Forecast | `forecast_revenue_trend` | Forecast revenue values and intervals | Horizon-dependent | Forecast schema |
-| Forecast | `forecast_churn_trend` | Forecast churn values and intervals | Horizon-dependent | Forecast schema |
-| Forecast | `forecast_trend_combined` | Combined revenue and churn forecasts | Horizon-dependent | Forecast schema |
-| Predictions | `churn_predictions` | Eligible-customer probabilities, SHAP values, and reason codes | Eligible customers | Prediction schema |
+| Stage | Table | Description |
+| :--- | :--- | :--- |
+| Features | `customer_features` | Customer behavioral aggregations |
+| Labels | `customer_churn_labels` | Churn flags, dates, recency, order count, and censoring status |
+| Merge | `customer_features_with_labels` | Joined features and targets |
+| Encode | `features_encoded` | Frequency-encoded and transformed features |
+| Split | `model_ready_train` | Temporal training split |
+| Split | `model_ready_val` | Validation split for threshold tuning |
+| Split | `model_ready_test` | Unseen test split for final reporting |
+| Cohort | `customer_cohort_analysis` | Retention, repeat purchase, revenue, and churn by cohort and relative month |
+| Trends | `historical_revenue_trend` | Historical revenue trend by configured granularity |
+| Trends | `historical_churn_trend` | Historical churn trend by configured granularity |
+| Trends | `historical_trend_combined` | Combined historical revenue and churn trends |
+| Forecast | `forecast_revenue_trend` | Forecast revenue values and intervals |
+| Forecast | `forecast_churn_trend` | Forecast churn values and intervals |
+| Forecast | `forecast_trend_combined` | Combined revenue and churn forecasts |
+| Predictions | `churn_predictions` | Eligible-customer probabilities, SHAP values, and reason codes |
 
 ---
 
@@ -451,10 +468,10 @@ Run the full automated test suite from the repository root:
 pytest
 ```
 
-The suite currently contains 23 test modules covering ingestion and cleaning,
-feature engineering, database access, cohort analysis, forecasting, historical
-trends, class-imbalance handling, Logistic Regression, LightGBM, calibration,
-and the explainability/prediction interface. Use focused runs while developing:
+The suite contains 23 test modules covering ingestion and cleaning, feature
+engineering, database access, cohort analysis, forecasting, historical trends,
+class-imbalance handling, Logistic Regression, LightGBM, calibration, and the
+explainability/prediction interface. Use focused runs while developing:
 
 ```bash
 pytest tests/test_cohort_analysis.py
