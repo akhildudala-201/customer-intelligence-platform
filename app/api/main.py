@@ -28,6 +28,8 @@ ROUTER_MODULES = [
     ("app.api.cohort_trend_api.routers", API_PREFIX),
     # CLV, Delivery & Payments Drivers
     ("app.api.clv_delivery_payments.clv_delivery_endpoints", API_PREFIX),
+    # Segmentation & Risk
+    ("app.api.segmentation_and_risk.segmentation_routes", API_PREFIX),
     # Other teammates (optional / future additions)
     ("app.api.ml_predictions.router", API_PREFIX),
     ("app.api.segmentation.router", API_PREFIX),
