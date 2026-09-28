@@ -1,5 +1,5 @@
-"""LightGBM training pipeline with Optuna hyperparameter optimization and drift evaluation."""
 
+import inspect
 import json
 import os
 import sys
@@ -21,9 +21,10 @@ import seaborn as sns
 from optuna.samplers import TPESampler
 from sklearn.metrics import (
     average_precision_score,
-    classification_report,
+    balanced_accuracy_score,
     confusion_matrix,
     f1_score,
+    make_scorer,
     precision_recall_curve,
     precision_score,
     recall_score,
@@ -49,10 +50,14 @@ try:
 except ModuleNotFoundError:
     from ml.experiment_logger import log_experiment
 
-warnings.filterwarnings("ignore")
+# Silence only the known-noisy warnings instead of every warning in the process.
+warnings.filterwarnings("ignore", message="X does not have valid feature names")
+warnings.filterwarnings("ignore", message=".*has feature names, but.*was fitted without feature names")
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-# Optimal hyperparameters discovered by Optuna (40 trials x 5-fold CV on PR-AUC)
+# Hyperparameters found by an earlier Optuna search (40 trials x 5-fold CV).
+# NOTE: they were tuned on an older feature set; set TUNE_HYPERPARAMETERS=True
+# to re-tune whenever the feature contract changes.
 DEFAULT_BEST_PARAMS = {
     "num_leaves": 23,
     "max_depth": 7,
@@ -65,23 +70,37 @@ DEFAULT_BEST_PARAMS = {
     "min_child_samples": 53,
 }
 
+CHURN_LABEL = 1
+
 CONFIG = {
     "TARGET_COLUMN": "churn_label",
     "ID_COLUMN": "customer_unique_id",
     "RANDOM_STATE": 42,
-    "RESAMPLER": "weights",  # 'weights' (scale_pos_weight) or 'smote' or 'none'
-    "POSITIVE_CLASS": None,  # None auto-detects minority class
-    "TUNE_HYPERPARAMETERS": False,  # False = instant 3-second run using DEFAULT_BEST_PARAMS; True = re-tune with Optuna
+    # 'weights' (class_weight='balanced'), 'smote', or 'none'
+    "RESAMPLER": "weights",
+    # Always train on churn (1) as the positive class so P(class 1) == P(churn)
+    # everywhere downstream. Set to 0 only for an explicit retention model.
+    "POSITIVE_CLASS": CHURN_LABEL,
+    "TUNE_HYPERPARAMETERS": False,  # False = use DEFAULT_BEST_PARAMS; True = re-tune with Optuna
     "N_TRIALS": 40,
     "CV_FOLDS": 5,
     "N_ESTIMATORS": 2000,
     "EARLY_STOPPING_ROUNDS": 100,
-    "EVAL_METRIC": "average_precision",
+    # Early stopping / Optuna are scored on PR-AUC of the MINORITY class
+    # (retained customers). PR-AUC of a ~97% majority class is ~0.99 for
+    # almost any model, so it cannot guide training.
+    "EVAL_METRIC": "ap_minority",
     "SMOTE_K_NEIGHBORS": 5,
-    "THRESHOLD_MODE": "rate",  # 'rate' (top population slice) or 'score' (probability cutoff)
+    # 'score' = fixed probability cut-off tuned on validation (works for any
+    # batch size, including single-customer API calls).
+    # 'rate'  = flag the top TARGET_FLAG_RATE share of a scored batch
+    # (only meaningful for batch scoring).
+    "THRESHOLD_MODE": "score",
+    "THRESHOLD_METRIC": "balanced_accuracy",
     "TARGET_FLAG_RATE": 0.05,
     "DRIFT_CHECK": True,
-    "OUTPUT_DIR": str(PROJECT_ROOT / "outputs" / "models") + "/",
+    "PSI_SHIFT_THRESHOLD": 0.25,
+    "OUTPUT_DIR": str(PROJECT_ROOT / "outputs" / "models") + os.sep,
     "TIMESTAMP": datetime.now().strftime("%Y%m%d_%H%M%S"),
 }
 
@@ -133,7 +152,10 @@ LEAKY_COLS = [
 
 
 class ChurnLightGBM:
-    """LightGBM classifier with class weighting, threshold tuning, and scikit-learn API."""
+    """LightGBM classifier with class weighting, threshold tuning, and scikit-learn API.
+
+    Used by imbalance_experiments.py. Its API is unchanged.
+    """
 
     def __init__(
         self,
@@ -249,6 +271,27 @@ class ChurnLightGBM:
         }).sort_values("importance", ascending=False).reset_index(drop=True)
 
 
+# ---------------------------------------------------------------------------
+# Minority-class metric used for early stopping and Optuna
+# ---------------------------------------------------------------------------
+
+def ap_minority_eval(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[str, float, bool]:
+    """LightGBM eval metric: PR-AUC of label 0 (retained), higher is better.
+
+    y_pred is P(label == 1), so the score for label 0 is 1 - y_pred.
+    Defined at module level so the fitted model stays picklable.
+    """
+    y_true = np.asarray(y_true).astype(int)
+    if y_true.min() == y_true.max():
+        return "ap_minority", 0.0, True
+    return "ap_minority", float(average_precision_score(1 - y_true, 1 - np.asarray(y_pred))), True
+
+
+AP_MINORITY_SCORER = make_scorer(
+    average_precision_score, response_method="predict_proba", pos_label=0
+)
+
+
 def load_train_val_test():
     """Load train, validation, and test datasets from database."""
     if engine is None:
@@ -270,20 +313,18 @@ def split_features_target(df: pd.DataFrame):
     return X, y
 
 
-HAS_FEATURE_PREP = True
-
-
 def load_data():
-    """Load dataset splits and log row/column counts."""
+    """Load dataset splits and log row/column counts.
+
+    Raises instead of calling sys.exit() so callers (run_all.py, tests,
+    notebooks) can handle the failure.
+    """
     banner("LOADING DATA")
-    if load_train_val_test is None:
-        log_message("load_train_val_test function not found.", "ERROR")
-        sys.exit(1)
     try:
         train_df, val_df, test_df = load_train_val_test()
     except Exception as exc:
         log_message(f"Failed to load data: {exc}", "ERROR")
-        sys.exit(1)
+        raise RuntimeError(f"Could not load model_ready_* tables: {exc}") from exc
 
     for name, df in (("Train", train_df), ("Val", val_df), ("Test", test_df)):
         log_message(f"{name}: {df.shape[0]:,} rows x {df.shape[1]} cols")
@@ -325,16 +366,9 @@ def prepare_data(train_df: pd.DataFrame, val_df: pd.DataFrame, test_df: pd.DataF
     """Filter features, remove constant columns, and encode the target class."""
     banner("PREPARING DATA")
 
-    if HAS_FEATURE_PREP:
-        X_train, y_train_raw = split_features_target(train_df)
-        X_val, y_val_raw = split_features_target(val_df)
-        X_test, y_test_raw = split_features_target(test_df)
-    else:
-        exclude = [CONFIG["TARGET_COLUMN"], CONFIG["ID_COLUMN"]]
-        cols = [c for c in train_df.columns if c not in exclude]
-        X_train, y_train_raw = train_df[cols].copy(), train_df[CONFIG["TARGET_COLUMN"]]
-        X_val, y_val_raw = val_df[cols].copy(), val_df[CONFIG["TARGET_COLUMN"]]
-        X_test, y_test_raw = test_df[cols].copy(), test_df[CONFIG["TARGET_COLUMN"]]
+    X_train, y_train_raw = split_features_target(train_df)
+    X_val, y_val_raw = split_features_target(val_df)
+    X_test, y_test_raw = split_features_target(test_df)
 
     # Drop zero-variance columns in training split
     nunique = X_train.nunique()
@@ -348,13 +382,19 @@ def prepare_data(train_df: pd.DataFrame, val_df: pd.DataFrame, test_df: pd.DataF
     X_val = X_val[X_train.columns]
     X_test = X_test[X_train.columns]
 
-    # Map minority class of interest to 1
-    pos = CONFIG["POSITIVE_CLASS"]
+    # Positive class is explicit (churn = 1 by default). It is no longer
+    # auto-detected as the minority class: that silently flipped the meaning
+    # of predict_proba() and SHAP values for every downstream consumer.
+    pos = CONFIG.get("POSITIVE_CLASS")
     if pos is None:
-        pos = int(y_train_raw.value_counts().idxmin())
-        log_message(f"Auto-selected positive class = original label {pos} (minority)")
-    else:
-        log_message(f"Positive class = original label {pos} (from CONFIG)")
+        pos = CHURN_LABEL
+    pos = int(pos)
+    if pos not in (0, 1):
+        raise ValueError(f"POSITIVE_CLASS must be 0 or 1, got {pos!r}")
+    log_message(
+        f"Positive class = original label {pos} "
+        f"({'churned' if pos == CHURN_LABEL else 'retained'})"
+    )
 
     y_train = (y_train_raw == pos).astype(int)
     y_val = (y_val_raw == pos).astype(int)
@@ -369,21 +409,24 @@ def prepare_data(train_df: pd.DataFrame, val_df: pd.DataFrame, test_df: pd.DataF
 
 
 def make_estimator(params: dict, y_train: pd.Series):
-    """Instantiate LightGBM classifier with imbalance configuration."""
+    """Instantiate LightGBM classifier with imbalance configuration.
+
+    'weights' uses class_weight='balanced' (n / (2 * n_class)), which is
+    symmetric: it gives the same effective up-weighting of the minority class
+    whichever label is the positive one.
+    """
     params = dict(params)
     params.update(
         n_estimators=params.get("n_estimators", 400),
         objective="binary",
-        metric=CONFIG["EVAL_METRIC"],
+        metric="None",  # the custom minority-class metric is passed at fit time
         random_state=CONFIG["RANDOM_STATE"],
         n_jobs=-1,
         verbose=-1,
     )
 
     if CONFIG["RESAMPLER"] == "weights":
-        pos = int(np.sum(y_train == 1))
-        neg = int(np.sum(y_train == 0))
-        params["scale_pos_weight"] = neg / max(pos, 1)
+        params["class_weight"] = "balanced"
 
     clf = lgb.LGBMClassifier(**params)
 
@@ -407,7 +450,7 @@ def make_estimator(params: dict, y_train: pd.Series):
 
 
 def objective_function(trial: optuna.Trial, X_train: pd.DataFrame, y_train: pd.Series) -> float:
-    """Optuna objective function maximizing stratified cross-validation PR-AUC."""
+    """Optuna objective: stratified CV PR-AUC of the minority (retained) class."""
     params = {
         "num_leaves": trial.suggest_int("num_leaves", 8, 48),
         "max_depth": trial.suggest_int("max_depth", 3, 7),
@@ -425,23 +468,26 @@ def objective_function(trial: optuna.Trial, X_train: pd.DataFrame, y_train: pd.S
         n_splits=CONFIG["CV_FOLDS"], shuffle=True, random_state=CONFIG["RANDOM_STATE"]
     )
     scores = cross_val_score(
-        estimator, X_train, y_train, cv=cv, scoring="average_precision", n_jobs=-1
+        estimator, X_train, y_train, cv=cv, scoring=AP_MINORITY_SCORER, n_jobs=-1
     )
     return float(scores.mean())
 
 
 def hyperparameter_tuning(X_train: pd.DataFrame, y_train: pd.Series) -> dict:
-    """Return optimal hyperparameters (using cached best_params or running Optuna search)."""
+    """Return hyperparameters (cached defaults, or a fresh Optuna search)."""
     banner("HYPERPARAMETER CONFIGURATION")
 
     if not CONFIG.get("TUNE_HYPERPARAMETERS", False):
-        log_message("Using pre-tuned optimal hyperparameters (set CONFIG['TUNE_HYPERPARAMETERS']=True to re-tune with Optuna)")
+        log_message(
+            "Using cached DEFAULT_BEST_PARAMS (no tuning this run; set "
+            "CONFIG['TUNE_HYPERPARAMETERS']=True to re-tune with Optuna)"
+        )
         for k, v in DEFAULT_BEST_PARAMS.items():
             log_message(f"   {k}: {v}")
         return dict(DEFAULT_BEST_PARAMS)
 
-    baseline = float(y_train.mean())
-    log_message(f"Random-guess PR-AUC baseline = prevalence = {baseline:.4f}")
+    baseline = float(1 - y_train.mean())
+    log_message(f"Random-guess minority PR-AUC baseline = {baseline:.4f}")
     log_message(f"{CONFIG['N_TRIALS']} trials x {CONFIG['CV_FOLDS']}-fold CV")
 
     study = optuna.create_study(
@@ -453,14 +499,30 @@ def hyperparameter_tuning(X_train: pd.DataFrame, y_train: pd.Series) -> dict:
         show_progress_bar=False,
     )
 
-    log_message(f"Best CV PR-AUC: {study.best_value:.4f} (vs {baseline:.4f} baseline)")
+    log_message(f"Best CV minority PR-AUC: {study.best_value:.4f} (vs {baseline:.4f} baseline)")
     for k, v in study.best_params.items():
         log_message(f"   {k}: {v}")
     return dict(study.best_params)
 
 
+def _eval_data_kwargs(X_val: pd.DataFrame, y_val: pd.Series) -> dict:
+    """Validation-data arguments for LGBMClassifier.fit().
+
+    LightGBM >= 4.7 renamed eval_set=[(X, y)] to eval_X=(X,), eval_y=(y,)
+    and warns on the old name; older versions only accept eval_set.
+    """
+    if "eval_X" in inspect.signature(lgb.LGBMClassifier.fit).parameters:
+        return {"eval_X": (X_val,), "eval_y": (y_val,)}
+    return {"eval_set": [(X_val, y_val)]}
+
+
 def train_final_model(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series, best_params: dict):
-    """Fit final LightGBM model with early stopping on validation split."""
+    """Fit final LightGBM model with early stopping on the validation split.
+
+    Note: the validation split is also used to choose the decision threshold
+    (and later for calibration), so validation metrics are optimistic.
+    Only TEST metrics should be reported.
+    """
     banner("TRAINING FINAL MODEL")
 
     params = dict(best_params)
@@ -472,94 +534,128 @@ def train_final_model(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataF
         lgb.log_evaluation(period=50),
     ]
 
+    fit_kwargs = {**_eval_data_kwargs(X_val, y_val), "eval_metric": ap_minority_eval, "callbacks": callbacks}
+
     if CONFIG["RESAMPLER"] == "smote":
-        estimator.fit(
-            X_train,
-            y_train,
-            clf__eval_set=[(X_val, y_val)],
-            clf__eval_metric=CONFIG["EVAL_METRIC"],
-            clf__callbacks=callbacks,
-        )
+        estimator.fit(X_train, y_train, **{f"clf__{k}": v for k, v in fit_kwargs.items()})
         booster = estimator.named_steps["clf"]
     else:
-        estimator.fit(
-            X_train,
-            y_train,
-            eval_set=[(X_val, y_val)],
-            eval_metric=CONFIG["EVAL_METRIC"],
-            callbacks=callbacks,
-        )
+        estimator.fit(X_train, y_train, **fit_kwargs)
         booster = estimator
 
     log_message(f"Trees kept by early stopping: {booster.best_iteration_}")
-    log_message(f"Best validation score: {booster.best_score_}")
+    log_message(f"Best validation score: {dict(booster.best_score_)}")
     return estimator
 
 
 def choose_operating_point(model, X_val: pd.DataFrame, y_val: pd.Series):
-    """Determine probability decision threshold or percentile-based operating rate."""
+    """Choose the decision rule on validation.
+
+    SCORE mode (default): probability cut-off that maximises
+    CONFIG['THRESHOLD_METRIC'] (balanced accuracy by default, the same metric
+    model_comparison.py and calibration.py tune on).
+    RATE mode: flag the top TARGET_FLAG_RATE share of each scored batch.
+    """
     banner("CHOOSING OPERATING POINT")
     proba = model.predict_proba(X_val)[:, 1]
-    y_val = np.asarray(y_val)
+    y_val = np.asarray(y_val).astype(int)
 
-    precision, recall, thresholds = precision_recall_curve(y_val, proba)
-    f1 = np.divide(2 * precision * recall, precision + recall,
-                   out=np.zeros_like(precision), where=(precision + recall) > 0)
-    best = int(np.argmax(f1[:-1])) if len(thresholds) else 0
-    f1_threshold = float(thresholds[best]) if len(thresholds) else 0.5
-
-    log_message(f"Fixed cut-off 0.5      -> F1 {f1_score(y_val, proba >= 0.5, zero_division=0):.4f}")
+    metric = CONFIG.get("THRESHOLD_METRIC", "balanced_accuracy")
+    best_t, best_score = find_optimal_threshold(y_val, proba, metric=metric)
+    best_t = float(best_t)
+    pred = (proba >= best_t).astype(int)
     log_message(
-        f"Fixed cut-off {f1_threshold:.4f} -> F1 {f1[best]:.4f} "
-        f"(precision {precision[best]:.4f}, recall {recall[best]:.4f}, "
-        f"flags {100 * np.mean(proba >= f1_threshold):.1f}% of rows)"
+        f"Best {metric} threshold on validation: {best_t:.4f} ({metric}={best_score:.4f}, "
+        f"flags {100 * pred.mean():.1f}% of rows as positive)"
+    )
+    log_message(
+        f"Fixed cut-off 0.5 -> balanced accuracy "
+        f"{balanced_accuracy_score(y_val, proba >= 0.5):.4f}"
     )
 
-    log_message("Rate-based operating points on validation:")
+    # Customers ranked as LEAST likely to be positive (i.e. most likely to be
+    # retained when positive = churn). These are the useful targeting lists.
+    minority = 0 if y_val.mean() >= 0.5 else 1
+    score_for_minority = (1 - proba) if minority == 0 else proba
+    is_minority = (y_val == minority).astype(int)
+    base = max(is_minority.mean(), 1e-9)
+    log_message(f"Rate-based lists for the minority label ({minority}) on validation:")
     for k_pct in (1, 2, 5, 10, 20, 30):
         k = max(int(len(proba) * k_pct / 100), 1)
-        idx = np.argsort(-proba)[:k]
-        prec = float(np.mean(y_val[idx]))
-        rec = float(np.sum(y_val[idx]) / max(np.sum(y_val), 1))
-        f1k = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
+        idx = np.argsort(-score_for_minority, kind="stable")[:k]
+        prec = float(np.mean(is_minority[idx]))
+        rec = float(np.sum(is_minority[idx]) / max(np.sum(is_minority), 1))
         log_message(
             f"   top {k_pct:>2}%: precision {prec:.4f}, recall {rec:.4f}, "
-            f"F1 {f1k:.4f}, lift {prec / max(y_val.mean(), 1e-9):.1f}x"
+            f"lift {prec / base:.1f}x"
         )
 
     if CONFIG["THRESHOLD_MODE"] == "rate":
-        rate = CONFIG["TARGET_FLAG_RATE"]
-        log_message(f"Using RATE mode: flag the top {100 * rate:.0f}% of each scored population.")
-        return ("rate", float(rate))
+        rate = float(CONFIG["TARGET_FLAG_RATE"])
+        log_message(
+            f"Using RATE mode: flag the top {100 * rate:.0f}% of each scored batch. "
+            "Not suitable for single-customer scoring.",
+            "WARNING",
+        )
+        return ("rate", rate)
 
-    log_message(f"Using SCORE mode: fixed cut-off {f1_threshold:.4f}.", "WARNING")
-    return ("score", f1_threshold)
+    log_message(f"Using SCORE mode: fixed cut-off {best_t:.4f} on P(class 1).")
+    return ("score", best_t)
 
 
 def apply_operating_point(proba: np.ndarray, mode: str, value: float) -> np.ndarray:
-    """Convert predicted probability scores to binary classification decisions."""
+    """Convert predicted probability scores to binary classification decisions.
+
+    rate mode flags exactly round(n * value) rows (ties broken by position),
+    and flags nothing when that rounds to 0 (e.g. a single customer).
+    """
+    proba = np.asarray(proba, dtype=float)
     if mode == "rate":
-        k = max(int(round(len(proba) * value)), 1)
-        cut = np.sort(proba)[::-1][k - 1]
-        return (proba >= cut).astype(int)
+        k = int(round(len(proba) * value))
+        pred = np.zeros(len(proba), dtype=int)
+        if k <= 0:
+            return pred
+        top = np.argsort(-proba, kind="stable")[:k]
+        pred[top] = 1
+        return pred
     return (proba >= value).astype(int)
 
 
 def psi(expected: np.ndarray, actual: np.ndarray, bins: int = 10) -> float:
-    """Calculate Population Stability Index between two distributions."""
-    cuts = np.unique(np.quantile(expected, np.linspace(0, 1, bins + 1)))
-    if len(cuts) < 3:
+    """Population Stability Index between a reference and a new distribution.
+
+    - Discrete features (<= `bins` distinct reference values, e.g. 0/1 flags)
+      are compared category by category.
+    - Continuous features use reference-quantile bins with open outer edges
+      (-inf, +inf), so values outside the training range are still counted.
+    """
+    e = np.asarray(expected, dtype=float)
+    a = np.asarray(actual, dtype=float)
+    e = e[~np.isnan(e)]
+    a = a[~np.isnan(a)]
+    if len(e) == 0 or len(a) == 0:
         return 0.0
-    e = np.histogram(expected, bins=cuts)[0] / max(len(expected), 1)
-    a = np.histogram(actual, bins=cuts)[0] / max(len(actual), 1)
-    e = np.clip(e, 1e-6, None)
-    a = np.clip(a, 1e-6, None)
-    return float(np.sum((a - e) * np.log(a / e)))
+
+    ref_values = np.unique(e)
+    if len(ref_values) <= bins:
+        categories = np.union1d(ref_values, np.unique(a))
+        e_pct = np.array([np.mean(e == c) for c in categories])
+        a_pct = np.array([np.mean(a == c) for c in categories])
+    else:
+        inner = np.unique(np.quantile(e, np.linspace(0, 1, bins + 1)[1:-1]))
+        edges = np.concatenate(([-np.inf], inner, [np.inf]))
+        e_pct = np.histogram(e, bins=edges)[0] / len(e)
+        a_pct = np.histogram(a, bins=edges)[0] / len(a)
+
+    e_pct = np.clip(e_pct, 1e-6, None)
+    a_pct = np.clip(a_pct, 1e-6, None)
+    return float(np.sum((a_pct - e_pct) * np.log(a_pct / e_pct)))
 
 
 def drift_report(model, X_train: pd.DataFrame, X_val: pd.DataFrame, X_test: pd.DataFrame) -> pd.DataFrame:
     """Evaluate feature and score distribution stability across splits."""
     banner("DRIFT REPORT (train vs val vs test)")
+    limit = CONFIG.get("PSI_SHIFT_THRESHOLD", 0.25)
     rows = []
     for col in X_train.columns:
         rows.append(
@@ -574,7 +670,7 @@ def drift_report(model, X_train: pd.DataFrame, X_val: pd.DataFrame, X_test: pd.D
         )
     df = pd.DataFrame(rows).sort_values("psi_test", ascending=False)
     for _, r in df.iterrows():
-        flag = "  <-- SHIFTED" if r["psi_test"] > 0.25 else ""
+        flag = "  <-- SHIFTED" if r["psi_test"] > limit else ""
         log_message(
             f"   {r['feature']}: PSI val {r['psi_val']:.3f}, test {r['psi_test']:.3f} | "
             f"mean {r['mean_train']:.2f} / {r['mean_val']:.2f} / {r['mean_test']:.2f}{flag}"
@@ -583,21 +679,28 @@ def drift_report(model, X_train: pd.DataFrame, X_val: pd.DataFrame, X_test: pd.D
     p_tr = model.predict_proba(X_train)[:, 1]
     p_v = model.predict_proba(X_val)[:, 1]
     p_te = model.predict_proba(X_test)[:, 1]
-    log_message("Predicted-score distribution (mean / 95th pct / share above 0.9):")
+    log_message(f"Score PSI: val {psi(p_tr, p_v):.3f}, test {psi(p_tr, p_te):.3f}")
+    log_message("Predicted-score distribution (mean / 5th pct / 95th pct):")
     for name, p in (("train", p_tr), ("val", p_v), ("test", p_te)):
         log_message(
-            f"   {name:<5} {p.mean():.4f} / {np.quantile(p, 0.95):.4f} / "
-            f"{np.mean(p > 0.9):.4f}"
+            f"   {name:<5} {p.mean():.4f} / {np.quantile(p, 0.05):.4f} / "
+            f"{np.quantile(p, 0.95):.4f}"
         )
     return df
 
 
 def evaluate_model(model, mode: str, value: float, splits: list) -> dict:
-    """Evaluate model metrics, confusion matrix, and classification report on all splits."""
+    """Evaluate model metrics for both classes on all splits.
+
+    With churn as the positive class (~95% of rows), churn precision / PR-AUC
+    sit close to their baselines for any model, so balanced accuracy and the
+    minority-class (retained) metrics are reported alongside them.
+    """
     banner(f"MODEL EVALUATION (operating point: {mode} = {value:.4f})")
     results = {}
 
     for name, X, y in splits:
+        y = np.asarray(y).astype(int)
         proba = model.predict_proba(X)[:, 1]
         pred = apply_operating_point(proba, mode, value)
 
@@ -606,8 +709,14 @@ def evaluate_model(model, mode: str, value: float, splits: list) -> dict:
             "precision": float(precision_score(y, pred, zero_division=0)),
             "recall": float(recall_score(y, pred, zero_division=0)),
             "f1": float(f1_score(y, pred, zero_division=0)),
+            "balanced_accuracy": float(balanced_accuracy_score(y, pred)),
             "roc_auc": float(roc_auc_score(y, proba)),
             "pr_auc": float(average_precision_score(y, proba)),
+            # Class-0 view (retained customers when positive = churn)
+            "neg_prevalence": float(1 - np.mean(y)),
+            "neg_precision": float(precision_score(1 - y, 1 - pred, zero_division=0)),
+            "neg_recall": float(recall_score(1 - y, 1 - pred, zero_division=0)),
+            "neg_pr_auc": float(average_precision_score(1 - y, 1 - proba)),
             "lift": 0.0,
         }
         metrics["lift"] = (
@@ -615,17 +724,17 @@ def evaluate_model(model, mode: str, value: float, splits: list) -> dict:
         )
 
         log_message(f"{name}:")
-        log_message(f"   positives      {int(np.sum(y)):,} / {len(y):,} ({100 * metrics['prevalence']:.2f}%)")
-        log_message(f"   PR-AUC         {metrics['pr_auc']:.4f}  (baseline {metrics['prevalence']:.4f})")
-        log_message(f"   ROC-AUC        {metrics['roc_auc']:.4f}")
-        log_message(f"   precision      {metrics['precision']:.4f}")
-        log_message(f"   recall         {metrics['recall']:.4f}")
-        log_message(f"   F1             {metrics['f1']:.4f}")
-        log_message(f"   lift over base {metrics['lift']:.2f}x")
-        log_message(f"   flagged        {int(pred.sum()):,} rows ({100 * pred.mean():.1f}%)")
-        log_message(f"   confusion matrix [[tn fp],[fn tp]] = {confusion_matrix(y, pred).tolist()}")
+        log_message(f"   class 1 share     {int(np.sum(y)):,} / {len(y):,} ({100 * metrics['prevalence']:.2f}%)")
+        log_message(f"   ROC-AUC           {metrics['roc_auc']:.4f}")
+        log_message(f"   balanced accuracy {metrics['balanced_accuracy']:.4f}")
+        log_message(f"   class 1: PR-AUC {metrics['pr_auc']:.4f} (baseline {metrics['prevalence']:.4f}), "
+                    f"precision {metrics['precision']:.4f}, recall {metrics['recall']:.4f}")
+        log_message(f"   class 0: PR-AUC {metrics['neg_pr_auc']:.4f} (baseline {metrics['neg_prevalence']:.4f}), "
+                    f"precision {metrics['neg_precision']:.4f}, recall {metrics['neg_recall']:.4f}")
+        log_message(f"   flagged class 1   {int(pred.sum()):,} rows ({100 * pred.mean():.1f}%)")
+        log_message(f"   confusion matrix [[tn fp],[fn tp]] = {confusion_matrix(y, pred, labels=[0, 1]).tolist()}")
 
-        metrics.update(y_true=np.asarray(y), y_pred=pred, y_proba=proba)
+        metrics.update(y_true=y, y_pred=pred, y_proba=proba)
         results[name] = metrics
 
     return results
@@ -671,7 +780,7 @@ def create_visualizations(results: dict) -> None:
     axes = np.atleast_1d(axes)
     for ax, (name, data) in zip(axes, results.items()):
         sns.heatmap(
-            confusion_matrix(data["y_true"], data["y_pred"]),
+            confusion_matrix(data["y_true"], data["y_pred"], labels=[0, 1]),
             annot=True, fmt="d", cmap="Blues", cbar=False, ax=ax,
         )
         ax.set_title(name)
@@ -685,18 +794,19 @@ def create_visualizations(results: dict) -> None:
     for name, data in results.items():
         fpr, tpr, _ = roc_curve(data["y_true"], data["y_proba"])
         ax1.plot(fpr, tpr, label=f"{name} (AUC={data['roc_auc']:.3f})", linewidth=2)
-        prec, rec, _ = precision_recall_curve(data["y_true"], data["y_proba"])
-        ax2.plot(rec, prec, label=f"{name} (AP={data['pr_auc']:.3f})", linewidth=2)
-        ax2.axhline(data["prevalence"], linestyle=":", linewidth=1)
+        # PR curve for the minority class (class 0), where it is informative.
+        prec, rec, _ = precision_recall_curve(1 - data["y_true"], 1 - data["y_proba"])
+        ax2.plot(rec, prec, label=f"{name} (AP={data['neg_pr_auc']:.3f})", linewidth=2)
+        ax2.axhline(data["neg_prevalence"], linestyle=":", linewidth=1)
     ax1.plot([0, 1], [0, 1], "k--", label="random")
     ax1.set_xlabel("FPR")
     ax1.set_ylabel("TPR")
     ax1.set_title("ROC")
     ax1.legend()
     ax1.grid(alpha=0.3)
-    ax2.set_xlabel("Recall")
-    ax2.set_ylabel("Precision")
-    ax2.set_title("Precision-Recall")
+    ax2.set_xlabel("Recall (class 0)")
+    ax2.set_ylabel("Precision (class 0)")
+    ax2.set_title("Precision-Recall, class 0 (dotted = baseline)")
     ax2.legend()
     ax2.grid(alpha=0.3)
     plt.tight_layout()
@@ -705,8 +815,23 @@ def create_visualizations(results: dict) -> None:
     log_message(f"Saved plots to {CONFIG['OUTPUT_DIR']}")
 
 
+def _portable_config() -> dict:
+    """CONFIG copy with OUTPUT_DIR stored relative to the project root, so
+    metadata does not contain a developer's absolute (e.g. Windows) path."""
+    cfg = {k: v for k, v in CONFIG.items()}
+    try:
+        cfg["OUTPUT_DIR"] = Path(os.path.relpath(CONFIG["OUTPUT_DIR"], PROJECT_ROOT)).as_posix() + "/"
+    except ValueError:  # different drive on Windows
+        cfg["OUTPUT_DIR"] = "outputs/models/"
+    return cfg
+
+
 def save_model(model, feature_cols: list, results: dict, mode: str, value: float, positive_class: int, best_params: dict):
-    """Serialize model artifact and metadata to disk."""
+    """Serialize model artifact and metadata to disk.
+
+    Artifact keys are unchanged, so calibration.py, model_comparison.py,
+    threshold_analysis.py and the inference API keep working.
+    """
     banner("SAVING MODEL")
     ts = CONFIG["TIMESTAMP"]
     model_path = f"{CONFIG['OUTPUT_DIR']}lgb_churn_model_{ts}.joblib"
@@ -716,7 +841,8 @@ def save_model(model, feature_cols: list, results: dict, mode: str, value: float
         "feature_cols": list(feature_cols),
         "operating_point": {"mode": mode, "value": value},
         "positive_class": positive_class,
-        "config": {k: v for k, v in CONFIG.items()},
+        "probability_definition": f"P(churn_label == {positive_class})",
+        "config": _portable_config(),
         "best_params": best_params,
         "metrics": {
             name: {k: v for k, v in m.items() if not isinstance(v, np.ndarray)}
@@ -731,6 +857,21 @@ def save_model(model, feature_cols: list, results: dict, mode: str, value: float
         json.dump({k: v for k, v in artifact.items() if k != "model"}, fh, indent=2, default=str)
     log_message(f"Saved {meta_path}")
     return model_path, meta_path
+
+
+def _strategy_label() -> str:
+    """Describe this run truthfully in the experiment log."""
+    weighting = {
+        "weights": "class_weight=balanced",
+        "smote": "SMOTE",
+        "none": "no reweighting",
+    }.get(CONFIG["RESAMPLER"], CONFIG["RESAMPLER"])
+    tuning = (
+        f"Optuna {CONFIG['N_TRIALS']} trials"
+        if CONFIG.get("TUNE_HYPERPARAMETERS")
+        else "cached params, not re-tuned"
+    )
+    return f"{weighting}; {tuning}; early stop on {CONFIG['EVAL_METRIC']}"
 
 
 def main():
@@ -767,27 +908,32 @@ def main():
     try:
         run_id = log_experiment(
             model_name="LightGBM",
-            strategy=f"scale_pos_weight (Optuna {CONFIG['N_TRIALS']} trials)",
+            strategy=_strategy_label(),
             metrics=test,
             features_count=len(X_train.columns),
             threshold=f"{mode}={value:.4f}",
-            artifacts_path=model_path,
+            artifacts_path=Path(os.path.relpath(model_path, PROJECT_ROOT)).as_posix(),
         )
         log_message(f"Logged run #{run_id} to outputs/reports/experiment_log.csv")
     except Exception as exc:
         log_message(f"Could not log experiment: {exc}", "WARNING")
 
-    banner("SUMMARY")
+    banner("SUMMARY (test split)")
+    log_message(f"ROC-AUC            {test['roc_auc']:.4f}")
+    log_message(f"Balanced accuracy  {test['balanced_accuracy']:.4f}")
     log_message(
-        f"Test PR-AUC  {test['pr_auc']:.4f} (baseline {test['prevalence']:.4f}) "
-        f"= {test['pr_auc'] / max(test['prevalence'], 1e-9):.1f}x baseline"
+        f"Class {positive_class} PR-AUC     {test['pr_auc']:.4f} (baseline {test['prevalence']:.4f})"
     )
-    log_message(f"Test ROC-AUC {test['roc_auc']:.4f}")
     log_message(
-        f"Operating point {mode}={value:.4f}: precision {test['precision']:.4f}, "
-        f"recall {test['recall']:.4f}, lift {test['lift']:.2f}x"
+        f"Class {1 - positive_class} PR-AUC     {test['neg_pr_auc']:.4f} (baseline {test['neg_prevalence']:.4f}) "
+        f"= {test['neg_pr_auc'] / max(test['neg_prevalence'], 1e-9):.1f}x baseline"
     )
-    log_message(f"Reported metrics are for original label {positive_class}.")
+    log_message(
+        f"Operating point {mode}={value:.4f}: class {positive_class} precision {test['precision']:.4f}, "
+        f"recall {test['recall']:.4f} | class {1 - positive_class} precision {test['neg_precision']:.4f}, "
+        f"recall {test['neg_recall']:.4f}"
+    )
+    log_message(f"predict_proba()[:, 1] = P(churn_label == {positive_class}).")
 
 
 if __name__ == "__main__":
