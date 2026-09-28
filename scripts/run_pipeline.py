@@ -13,24 +13,13 @@ ANALYTICS_DIR = ROOT / "app" / "segmentation" / "customer_analytics"
 FORECASTING_DIR = ANALYTICS_DIR / "forecasting"
 ML_DIR = ROOT / "app" / "ml"
 
-# --- Modules that must be run with `python -m ...` ---
-# These scripts do `from app.X import Y` (absolute, package-style imports)
-# with no sys.path bootstrap of their own, so invoking them as a direct
-# file path (`python /abs/path/script.py`) fails with
-# "ModuleNotFoundError: No module named 'app'" -- only the script's own
-# folder ends up on sys.path, not the project root. `-m` puts the
-# current working directory (the repo root, since we set cwd=ROOT) on
-# sys.path instead, which is also how the README documents running
-# each of these.
+
 COHORT_MODULE = "app.segmentation.customer_analytics.cohort_analysis"
 FORECASTING_MODULE = "app.segmentation.customer_analytics.forecasting.forecasting"
 PREDICTIONS_MODULE = "app.ml.explainibility_inference.inference.generate_predictions_table"
 
 # --- Segmentation step ---
-# Order matters: risk tier + GMM segmentation and CLV both feed the
-# campaign recommendations step, so campaign recommendations must run
-# last. All three require churn_predictions (written by the ML stage)
-# to exist.
+
 SEGMENTATION_MODULE = "app.segmentation.customer_intelligence.pipeline.generate_customer_intelligence_tables"
 CLV_MODULE = "app.segmentation.customer_intelligence.generate_clv_table"
 CAMPAIGN_MODULE = "app.segmentation.customer_intelligence.campaign_engine.pipeline.generate_campaign_recommendations_table"

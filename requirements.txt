@@ -23,9 +23,11 @@ shap>=0.50.0
 
 # API & Explainability Interface
 fastapi==0.141.1
+starlette==1.7.0
 pydantic>=2.0.0
 uvicorn==0.52.4
 
 # Testing & Quality Assurance
 pytest==9.1.1
 pytest-cov==7.1.0
+httpx2==2.13.1

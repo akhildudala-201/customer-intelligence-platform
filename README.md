@@ -111,6 +111,68 @@ Evaluated across cost-sensitive weights and resampling techniques:
 
 ---
 
+## Customer Segmentation & Campaign Intelligence
+
+Once a customer has a churn probability (from `churn_predictions`), the
+segmentation stack turns that single number — plus behavioral features and
+spend history — into three business-facing signals, then combines them into
+a recommended retention action.
+
+### Risk Tier Classification
+
+Each customer's `churn_probability` is mapped to one of three tiers using
+cutoffs defined in `app/segmentation/customer_intelligence/config/risk_tier_thresholds.yaml`
+(editable without a code change):
+
+| Risk Tier | Churn Probability Range |
+| :--- | :---: |
+| Low Risk | 0.00 – 0.39 |
+| Medium Risk | 0.40 – 0.69 |
+| High Risk | 0.70 – 1.00 |
+
+### GMM Customer Segmentation 
+
+A Gaussian Mixture Model clusters customers on 11 behavioral features
+identifiers and churn probability are deliberately excluded from the
+clustering itself. The number of clusters (k) is chosen by evaluating
+`k = 2..7` against BIC, Silhouette, and Davies-Bouldin scores together rather
+than BIC alone, plus a practical minimum-cluster-size floor. GMM only ever
+outputs a numeric `segment_id` and a `cluster_probability` confidence score;
+business-friendly `segment_label`s (e.g. a value/experience/loyalty
+combination) are assigned afterward by profiling each cluster's average
+characteristics — segment labels never encode risk, since that's already
+captured separately by the risk tier.
+
+### Customer Lifetime Value (CLV)
+
+CLV is derived entirely from features Feature Engineering has already
+computed — no re-query of raw transactions:
+
+```text
+clv = avg_order_value × purchase_frequency_per_year × customer_lifespan_years
+```
+
+`purchase_frequency_per_year` falls back to the cohort's average annual
+frequency for one-time buyers (who have no individual rate to observe).
+Customers are then split into `value_tier` — High / Medium / Low — using a
+percentile split by default (top third / middle third / bottom third of CLV),
+which can be overridden with fixed business cutoffs via
+`ValueTierThresholds` in `clv_calculator.py`.
+
+### Campaign Recommendation Engine 
+
+The final stage looks up each customer's `(risk_tier, segment, value_tier)`
+combination against `app/segmentation/customer_intelligence/campaign_rules_reasoncodes.yaml`
+and produces a `campaign_name`, `campaign_priority`, and `reason_code` — for
+example, high-risk + high-value customers route to high-touch retention
+outreach, while low-value segments get lighter-weight engagement rather than
+blanket discounts. Rules are edited in YAML, not code, and are validated at
+load time by `campaign_rules_loader.py`.
+
+
+
+---
+
 ## Tech Stack
 
 | Component | Tool / Library | Usage |
@@ -122,7 +184,9 @@ Evaluated across cost-sensitive weights and resampling techniques:
 | **Hyperparameter Tuning** | Optuna (TPE Sampler) | Optional 5-fold stratified optimization on PR-AUC |
 | **Data Drift & Monitoring** | Population Stability Index (PSI) | Tracking feature & score stability across Train/Val/Test |
 | **Model Persistence** | Joblib | Production bundle packaging (`.joblib` & `.json` metadata) |
-| **Explainability & Serving** | SHAP, FastAPI, Uvicorn | Feature contributions and HTTP prediction API |
+| **Explainability & Serving** | SHAP, FastAPI, Uvicorn, Pydantic | Feature contributions, request/response validation, and HTTP prediction API |
+| **Time Series Forecasting** | statsmodels (ETS / Exponential Smoothing) | Revenue and churn trend forecasting |
+| **Customer Segmentation** | scikit-learn (Gaussian Mixture Models), PyYAML | GMM clustering, risk-tier thresholds, and campaign rules config |
 | **Testing** | Pytest | Automated unit and integration test suite |
 
 ---
@@ -170,7 +234,39 @@ customer-intelligence-platform/
 │   │   ├── label_config.yaml             # Configurable churn observation & return windows
 │   │   └── trend_config.yaml             # Historical-trend configuration
 │   └── segmentation/
-│       └── customer_analytics/           # Cohort, trend, and forecasting pipelines
+│       ├── customer_analytics/           # Cohort, trend, and forecasting pipelines
+│       │   ├── cohort_analysis.py         # Retention, repeat-purchase, revenue & churn by cohort
+│       │   ├── Trends/                    # Historical trend loading, computation & export
+│       │   │   ├── data_loader.py
+│       │   │   ├── trend_engine.py
+│       │   │   ├── export.py
+│       │   │   ├── schemas.py
+│       │   │   └── pipeline.py            # Orchestrates the historical trend stage
+│       │   └── forecasting/
+│       │       └── forecasting.py         # ETS-based revenue & churn trend forecasting
+│       └── customer_intelligence/        # Risk tiers, GMM segmentation, CLV, campaign recommendations
+│           ├── data_access/
+│           │   ├── customer_intelligence_repository.py  # Merges features_encoded + churn_predictions
+│           │   └── campaign_input_repository.py          # Merges risk_tier + segment + CLV value_tier
+│           ├── risk_tier/
+│           │   └── classifier.py          
+│           ├── gmm/
+│           │   ├── feature_prep.py        # Selects behavioural features for clustering
+│           │   ├── model_selection.py     # BIC + Silhouette + Davies-Bouldin cluster-count selection
+│           │   ├── segmenter.py           # Trains final GMM, assigns segment_id & cluster_probability
+│           │   └── labeling.py            # Assigns business labels to trained clusters
+│           ├── pipeline/
+│           │   └── generate_customer_intelligence_tables.py  # Orchestrates risk tier + GMM segmentation
+│           ├── campaign_engine/
+│           │   ├── campaign_rules_loader.py   # Loads & validates campaign_rules_reasoncodes.yaml
+│           │   ├── recommender.py             Campaign Recommendation Engine
+│           │   └── pipeline/
+│           │       └── generate_campaign_recommendations_table.py
+│           ├── config/
+│           │   └── risk_tier_thresholds.yaml  # Configurable risk-tier cutoffs
+│           ├── campaign_rules_reasoncodes.yaml  # Campaign rules & reason codes (schema 6.3)
+│           ├── clv_calculator.py           # Customer lifetime value calculation
+│           └── generate_clv_table.py       # Persists CLV output to customer_clv table
 ├── data/
 │   ├── Schema.sql                        # DDL schema with foreign keys and indexes
 │   └── olist_*.csv                       # Source raw CSVs
@@ -252,12 +348,27 @@ The pipeline script [`scripts/run_pipeline.py`](./scripts/run_pipeline.py) orche
 
 ### 1. Build the database, feature, and analytics tables
 
+By default, the script also runs prediction generation, cohort and trend
+analytics, forecasting, segmentation, CLV, and campaign recommendations.
+Those downstream stages require their upstream tables to exist. To build only
+the database, feature, and analytics inputs without refreshing predictions or
+running downstream customer-intelligence stages:
+
 ```bash
-# Ingest the CSV files and build all tables except churn predictions:
-.venv/bin/python scripts/run_pipeline.py --skip-predictions
+# Ingest the CSV files and build the prerequisite tables:
+.venv/bin/python scripts/run_pipeline.py \
+  --skip-predictions \
+  --skip-segmentation \
+  --skip-clv \
+  --skip-campaign
 
 # Skip ingestion when raw tables already exist:
-.venv/bin/python scripts/run_pipeline.py --skip-ingest --skip-predictions
+.venv/bin/python scripts/run_pipeline.py \
+  --skip-ingest \
+  --skip-predictions \
+  --skip-segmentation \
+  --skip-clv \
+  --skip-campaign
 ```
 
 ### 2. Run the complete pipeline
@@ -271,8 +382,10 @@ GMM customer segments, CLV, and campaign recommendations):
 .venv/bin/python scripts/run_pipeline.py --skip-ingest --train-all
 ```
 
-By default, the pipeline runs ingestion, data preparation, ML training,
-analytics, and the downstream customer-intelligence modules. Use
+By default, the pipeline runs ingestion, feature preparation, prediction
+generation, analytics, and the downstream customer-intelligence modules. It
+does not train models unless one of the training flags is provided. Use
+`--train-all` for the complete ML workflow, or use
 `--skip-predictions`, `--skip-segmentation`, `--skip-clv`, or
 `--skip-campaign` when those stages are already available or intentionally not
 needed. Individual stages can be skipped when their inputs or outputs are
@@ -446,6 +559,33 @@ churn probabilities, SHAP values, and reason codes, and replaces the
 The prediction-table job is also run automatically by `scripts/run_pipeline.py`
 after model training and calibration. Run the module separately only when a
 standalone prediction refresh is needed.
+
+### 6. Run the segmentation stack directly
+
+The segmentation stage (risk tiers, GMM segmentation, CLV, and campaign
+recommendations) can also be run stage by stage, independent of
+`scripts/run_pipeline.py`, once `churn_predictions` and `features_encoded`
+already exist. Run these in order — CLV has no upstream dependency here, but
+Campaign Recommendations requires both Risk Tier + GMM Segmentation and CLV
+to have already written their tables:
+
+```bash
+# 1. Risk Tier Classification + GMM Segmentation
+#    writes: customer_intelligence_base, customer_risk_tiers, customer_segments
+.venv/bin/python -m app.segmentation.customer_intelligence.pipeline.generate_customer_intelligence_tables
+
+# 2. Customer Lifetime Value
+#    writes: customer_clv
+.venv/bin/python -m app.segmentation.customer_intelligence.generate_clv_table
+
+# 3. Campaign Recommendations (run last — depends on the two tables above)
+#    writes: customer_campaign_recommendations
+.venv/bin/python -m app.segmentation.customer_intelligence.campaign_engine.pipeline.generate_campaign_recommendations_table
+```
+
+Risk-tier cutoffs live in `app/segmentation/customer_intelligence/config/risk_tier_thresholds.yaml`
+and campaign rules live in `app/segmentation/customer_intelligence/campaign_rules_reasoncodes.yaml` —
+both are editable without touching application code.
 
 ---
 

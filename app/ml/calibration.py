@@ -554,7 +554,7 @@ class _LGBAdapter:
 
     def predict_proba(self, X):
         if isinstance(X, pd.DataFrame):
-            X = X[self.feature_cols].values
+            X = X[self.feature_cols]
         raw = self.sk_model.predict_proba(X)[:, 1]
         return (1.0 - raw) if self.invert_proba else raw
 
