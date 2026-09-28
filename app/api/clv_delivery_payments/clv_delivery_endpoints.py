@@ -89,7 +89,7 @@ def records(df: pd.DataFrame) -> list:
     return df.to_dict(orient="records")
 
 
-router = APIRouter(tags=["P4 - CLV, Delivery & Payments"])
+router = APIRouter(tags=["CLV, Delivery & Payments"])
 
 # --------------------------------------------------------------------------
 # CLV
