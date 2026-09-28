@@ -560,7 +560,57 @@ The prediction-table job is also run automatically by `scripts/run_pipeline.py`
 after model training and calibration. Run the module separately only when a
 standalone prediction refresh is needed.
 
-### 6. Run the segmentation stack directly
+### 6. Run the unified analytics API
+
+The unified FastAPI service mounts the model evaluation, campaigns and
+forecasting, cohort and historical trends, CLV/delivery/payments, and
+segmentation/risk routers from `app/api/main.py`.
+
+Start it from the repository root:
+
+```bash
+.venv/bin/python -m uvicorn \
+  app.api.main:app \
+  --reload \
+  --host 0.0.0.0 \
+  --port 8080
+```
+
+Open the interactive documentation at
+[`http://127.0.0.1:8080/docs`](http://127.0.0.1:8080/docs).
+
+The service currently exposes **56 business/API paths**:
+
+| API group | Paths | Prefix |
+| :--- | ---: | :--- |
+| Health check | 1 | `/health` |
+| Model evaluation and feature analysis | 11 | `/model`, `/churn`, `/features` |
+| Campaigns, churn correlations, and forecasting | 12 | `/api/v1` |
+| Cohorts and historical trends | 10 | `/api/v1` |
+| CLV, delivery, and payments | 11 | `/api/v1` |
+| Segmentation and risk | 11 | `/api/v1` |
+
+The model-evaluation routes retain their existing paths without the
+`/api/v1` prefix. All other analytics routers use `/api/v1`. For example:
+
+```text
+GET /health
+GET /model/performance-summary
+GET /api/v1/campaigns/active
+GET /api/v1/churn/trend
+GET /api/v1/clv/summary
+GET /api/v1/delivery/performance
+GET /api/v1/risk/summary
+GET /api/v1/customers/search
+```
+
+The CLV, delivery, payments, cohort, trends, campaigns, forecasting, and
+segmentation/risk endpoints require the corresponding MySQL tables and
+environment configuration. The application can start without optional
+`ml_predictions` and `segmentation` router packages; it logs a warning when
+those packages are not present.
+
+### 7. Run the segmentation stack directly
 
 The segmentation stage (risk tiers, GMM segmentation, CLV, and campaign
 recommendations) can also be run stage by stage, independent of
@@ -640,6 +690,20 @@ pytest tests/test_cohort_analysis.py
 pytest tests/test_trend_analysis.py tests/test_forecasting.py
 pytest tests/explainibility_interface_tests/
 ```
+
+API-focused tests:
+
+```bash
+pytest tests/test_model_evaluation_api.py
+pytest tests/test_campaigns_forecast_api.py
+pytest tests/test_trends_cohorts_api.py
+pytest tests/test_clv_delivery_unittest.py
+pytest tests/test_segmentation_and_risk_api.py
+```
+
+The segmentation/risk API tests use the unified `/api/v1` prefix. The CLV
+delivery tests mount that router in an isolated test application so they can
+run without the unified service prefix.
 
 The complete suite requires the dependencies in the project environment,
 including the explainability stack. If collection reports a missing optional
