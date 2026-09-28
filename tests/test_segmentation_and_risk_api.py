@@ -7,6 +7,7 @@ from app.api.segmentation_and_risk import segmentation_routes
 
 
 client = TestClient(app)
+API_PREFIX = "/api/v1"
 
 
 
@@ -94,7 +95,7 @@ def mock_customer_view(monkeypatch, mock_customer_data):
 def test_get_customers_by_segment(mock_customer_view):
 
     response = client.get(
-        "/customers/bysegment",
+        f"{API_PREFIX}/customers/bysegment",
         params={
             "segment_id": 0,
             "limit": 10,
@@ -120,7 +121,7 @@ def test_get_customers_by_segment(mock_customer_view):
 def test_get_segment_profiles(mock_customer_view):
 
     response = client.get(
-        "/segments/profile"
+        f"{API_PREFIX}/segments/profile"
     )
 
     assert response.status_code == 200
@@ -142,7 +143,7 @@ def test_get_segment_profiles(mock_customer_view):
 def test_get_segment_customers(mock_customer_view):
 
     response = client.get(
-        "/segments/0/customers",
+        f"{API_PREFIX}/segments/0/customers",
         params={
             "limit": 10,
             "offset": 0,
@@ -165,7 +166,7 @@ def test_get_segment_customers(mock_customer_view):
 def test_get_segment_risk_mix(mock_customer_view):
 
     response = client.get(
-        "/segments/risk-mix"
+        f"{API_PREFIX}/segments/risk-mix"
     )
 
     assert response.status_code == 200
@@ -186,7 +187,7 @@ def test_get_segment_risk_mix(mock_customer_view):
 def test_get_risk_summary(mock_customer_view):
 
     response = client.get(
-        "/risk/summary"
+        f"{API_PREFIX}/risk/summary"
     )
 
     assert response.status_code == 200
@@ -214,7 +215,7 @@ def test_get_risk_summary(mock_customer_view):
 def test_get_at_risk_customers(mock_customer_view):
 
     response = client.get(
-        "/atrisk",
+        f"{API_PREFIX}/atrisk",
         params={
             "risk_tier": "High Risk",
             "min_probability": 0.7,
@@ -247,7 +248,7 @@ def test_get_at_risk_customers(mock_customer_view):
 def test_get_customer_profile(mock_customer_view):
 
     response = client.get(
-        "/customers/C001/profile"
+        f"{API_PREFIX}/customers/C001/profile"
     )
 
     assert response.status_code == 200
@@ -275,7 +276,7 @@ def test_get_customer_profile_not_found(
 ):
 
     response = client.get(
-        "/customers/UNKNOWN/profile"
+        f"{API_PREFIX}/customers/UNKNOWN/profile"
     )
 
     assert response.status_code == 404
@@ -292,7 +293,7 @@ def test_get_customer_profile_not_found(
 def test_get_segment_summary(mock_customer_view):
 
     response = client.get(
-        "/segments/summary"
+        f"{API_PREFIX}/segments/summary"
     )
 
     assert response.status_code == 200
@@ -322,7 +323,7 @@ def test_get_segment_summary(mock_customer_view):
 def test_get_segment_value_mix(mock_customer_view):
 
     response = client.get(
-        "/segments/value-mix"
+        f"{API_PREFIX}/segments/value-mix"
     )
 
     assert response.status_code == 200
@@ -348,7 +349,7 @@ def test_get_segment_value_mix(mock_customer_view):
 def test_get_risk_thresholds():
 
     response = client.get(
-        "/risk/thresholds"
+        f"{API_PREFIX}/risk/thresholds"
     )
 
     assert response.status_code == 200
@@ -379,7 +380,7 @@ def test_get_risk_thresholds():
 def test_search_customers(mock_customer_view):
 
     response = client.get(
-        "/customers/search",
+        f"{API_PREFIX}/customers/search",
         params={
             "q": "C001",
             "limit": 10,
@@ -416,7 +417,7 @@ def test_search_customers_with_risk_filter(
 ):
 
     response = client.get(
-        "/customers/search",
+        f"{API_PREFIX}/customers/search",
         params={
             "q": "C",
             "risk_tier": "High Risk",
@@ -448,7 +449,7 @@ def test_customer_search_pagination(
 ):
 
     response = client.get(
-        "/customers/search",
+        f"{API_PREFIX}/customers/search",
         params={
             "q": "C",
             "limit": 2,
