@@ -167,9 +167,63 @@ def test_features_churn_by_feature():
     assert "churn_rate_pct" in first_bucket
 
 
+def test_features_summary_subset():
+    response = client.get("/features/summary?features=monetary_value&features=avg_review_score")
+    assert response.status_code == 200
+    data = response.json()
+    assert "features" in data
+    assert len(data["features"]) == 2
+    returned_names = {f["feature"] for f in data["features"]}
+    assert returned_names == {"monetary_value", "avg_review_score"}
+
+
+def test_features_churn_by_feature_discrete():
+    # Test discrete/binary column branch
+    response = client.get("/features/churn-by-feature?feature=has_bad_review&buckets=5")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["feature"] == "has_bad_review"
+    assert "buckets" in data
+    assert len(data["buckets"]) <= 3  # discrete values 0 and 1
+    for b in data["buckets"]:
+        assert b["churn_rate_pct"] >= 0.0
+        assert b["customer_count"] > 0
+
+
+def test_features_distribution_validation_boundaries():
+    # Missing required 'feature' param -> 422
+    resp_missing = client.get("/features/distribution")
+    assert resp_missing.status_code == 422
+
+    # bins < 2 -> 422
+    resp_too_low = client.get("/features/distribution?feature=monetary_value&bins=1")
+    assert resp_too_low.status_code == 422
+
+    # bins > 100 -> 422
+    resp_too_high = client.get("/features/distribution?feature=monetary_value&bins=101")
+    assert resp_too_high.status_code == 422
+
+
+def test_features_churn_by_feature_validation_boundaries():
+    # Missing required 'feature' param -> 422
+    resp_missing = client.get("/features/churn-by-feature")
+    assert resp_missing.status_code == 422
+
+    # buckets < 2 -> 422
+    resp_too_low = client.get("/features/churn-by-feature?feature=monetary_value&buckets=1")
+    assert resp_too_low.status_code == 422
+
+    # buckets > 20 -> 422
+    resp_too_high = client.get("/features/churn-by-feature?feature=monetary_value&buckets=25")
+    assert resp_too_high.status_code == 422
+
+
 def test_feature_not_found_errors():
     resp_dist = client.get("/features/distribution?feature=invalid_feature_xyz")
     assert resp_dist.status_code in [400, 500]
+    assert "Could not calculate distribution" in resp_dist.json()["detail"]
 
     resp_churn = client.get("/features/churn-by-feature?feature=invalid_feature_xyz")
     assert resp_churn.status_code in [400, 500]
+    assert "Could not calculate churn by feature" in resp_churn.json()["detail"]
+
