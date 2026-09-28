@@ -15,8 +15,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
-from app.api.routers.trends_cohorts import get_engine, router
-from app.api.services import trends_cohorts as svc
+from app.api.cohort_trend_api.routers import get_engine, router
+from app.api.cohort_trend_api import services as svc
 
 PREFIX = "/api/v1"
 MONTHS = pd.date_range("2017-01-01", periods=6, freq="MS")
