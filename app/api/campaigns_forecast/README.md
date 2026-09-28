@@ -89,9 +89,8 @@ Produced by `scripts/run_pipeline.py`:
 1. **Python 3.11+** and a running **MySQL** with the pipeline tables (see above).
 2. Install dependencies from the project root:
    ```bash
-   pip install -r requirements-api.txt
+   pip install -r requirements.txt
    ```
-   (If you already ran `pip install -r requirements.txt`, you only need `pip install httpx` for the tests.)
 3. Create `.env` in the project root (copy `.env.example`):
    ```env
    DB_HOST=127.0.0.1
