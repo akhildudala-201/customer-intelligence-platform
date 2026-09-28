@@ -1,13 +1,4 @@
-"""
-Tests for the P6 trend and cohort endpoints.
 
-A temporary SQLite database is seeded with rows in the exact formats Person 4
-and Person 5 write (including awkward cases: "(%)" column names, "Mar 2017"
-cohort labels, "M10" month labels, NULLs, tinyint flags). The real MySQL
-engine is replaced through FastAPI's dependency override, so no .env or
-database server is needed. Run from the project root:
-    pytest tests/test_trends_cohorts_api.py -v
-"""
 import numpy as np
 import pandas as pd
 import pytest

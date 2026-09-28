@@ -13,10 +13,6 @@ API_PREFIX = "/api/v1"
 
 @pytest.fixture
 def mock_customer_data():
-    """
-    Sample customer data used for API unit tests.
-    No real database is required.
-    """
 
     return pd.DataFrame(
         [
