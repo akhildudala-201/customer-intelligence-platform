@@ -20,6 +20,8 @@ ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",
 
 # Modular router packages across the customer intelligence platform
 ROUTER_MODULES = [
+    # Churn dashboard, stored explanations & direct customer scoring
+    ("app.api.churn_analytics.router", API_PREFIX),
     # ML Evaluation, Calibration, Experiments & Feature Distributions
     ("app.api.model_evaluation.router", ""),
     # Campaigns, Churn Correlations & Forecasting
