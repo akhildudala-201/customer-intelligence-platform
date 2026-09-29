@@ -23,7 +23,7 @@ ROUTER_MODULES = [
     # Churn dashboard, stored explanations & direct customer scoring
     ("app.api.churn_analytics.router", API_PREFIX),
     # ML Evaluation, Calibration, Experiments & Feature Distributions
-    ("app.api.model_evaluation.router", ""),
+    ("app.api.model_evaluation.router", API_PREFIX),
     # Campaigns, Churn Correlations & Forecasting
     ("app.api.campaigns_forecast.router", API_PREFIX),
     # Cohort Analysis & Historical Trends

@@ -15,7 +15,7 @@ def test_health():
 
 
 def test_model_performance_summary():
-    response = client.get("/model/performance-summary")
+    response = client.get("/api/v1/model/performance-summary")
     assert response.status_code == 200
     data = response.json()
     assert data["model_name"] == "LightGBM"
@@ -26,7 +26,7 @@ def test_model_performance_summary():
 
 
 def test_model_comparison():
-    response = client.get("/model/comparison")
+    response = client.get("/api/v1/model/comparison")
     assert response.status_code == 200
     data = response.json()
     assert "comparison_table" in data
@@ -39,7 +39,7 @@ def test_model_comparison():
 
 
 def test_model_threshold_analysis():
-    response = client.get("/model/threshold-analysis")
+    response = client.get("/api/v1/model/threshold-analysis")
     assert response.status_code == 200
     data = response.json()
     assert data["recommended_model"] == "LightGBM"
@@ -51,7 +51,7 @@ def test_model_threshold_analysis():
 
 
 def test_model_version():
-    response = client.get("/model/version")
+    response = client.get("/api/v1/model/version")
     assert response.status_code == 200
     data = response.json()
     assert "model_name" in data
@@ -62,7 +62,7 @@ def test_model_version():
 
 
 def test_model_experiments():
-    response = client.get("/model/experiments")
+    response = client.get("/api/v1/model/experiments")
     assert response.status_code == 200
     data = response.json()
     assert "total_runs" in data
@@ -74,13 +74,13 @@ def test_model_experiments():
     assert "strategy" in first_run
 
     # Test limit parameter
-    resp_limit = client.get("/model/experiments?limit=2")
+    resp_limit = client.get("/api/v1/model/experiments?limit=2")
     assert resp_limit.status_code == 200
     assert len(resp_limit.json()["runs"]) <= 2
 
 
 def test_model_calibration():
-    response = client.get("/model/calibration")
+    response = client.get("/api/v1/model/calibration")
     assert response.status_code == 200
     data = response.json()
     assert "model_name" in data
@@ -94,7 +94,7 @@ def test_model_calibration():
 
 
 def test_model_imbalance_experiments():
-    response = client.get("/model/imbalance-experiments?model=lightgbm")
+    response = client.get("/api/v1/model/imbalance-experiments?model=lightgbm")
     assert response.status_code == 200
     data = response.json()
     assert data["model"] == "LightGBM"
@@ -106,13 +106,13 @@ def test_model_imbalance_experiments():
     assert "roc_auc" in first_strat
 
     # Test logistic regression query
-    resp_lr = client.get("/model/imbalance-experiments?model=logistic_regression")
+    resp_lr = client.get("/api/v1/model/imbalance-experiments?model=logistic_regression")
     assert resp_lr.status_code == 200
     assert resp_lr.json()["model"] == "Logistic Regression"
 
 
 def test_churn_definition():
-    response = client.get("/churn/definition")
+    response = client.get("/api/v1/churn/definition")
     assert response.status_code == 200
     data = response.json()
     assert data["return_window_days"] == 180
@@ -126,7 +126,7 @@ def test_churn_definition():
 
 
 def test_features_summary():
-    response = client.get("/features/summary")
+    response = client.get("/api/v1/features/summary")
     assert response.status_code == 200
     data = response.json()
     assert "total_records" in data
@@ -141,7 +141,7 @@ def test_features_summary():
 
 
 def test_features_distribution():
-    response = client.get("/features/distribution?feature=monetary_value&bins=10")
+    response = client.get("/api/v1/features/distribution?feature=monetary_value&bins=10")
     assert response.status_code == 200
     data = response.json()
     assert data["feature"] == "monetary_value"
@@ -155,7 +155,7 @@ def test_features_distribution():
 
 
 def test_features_churn_by_feature():
-    response = client.get("/features/churn-by-feature?feature=monetary_value&buckets=5")
+    response = client.get("/api/v1/features/churn-by-feature?feature=monetary_value&buckets=5")
     assert response.status_code == 200
     data = response.json()
     assert data["feature"] == "monetary_value"
@@ -168,7 +168,7 @@ def test_features_churn_by_feature():
 
 
 def test_features_summary_subset():
-    response = client.get("/features/summary?features=monetary_value&features=avg_review_score")
+    response = client.get("/api/v1/features/summary?features=monetary_value&features=avg_review_score")
     assert response.status_code == 200
     data = response.json()
     assert "features" in data
@@ -179,7 +179,7 @@ def test_features_summary_subset():
 
 def test_features_churn_by_feature_discrete():
     # Test discrete/binary column branch
-    response = client.get("/features/churn-by-feature?feature=has_bad_review&buckets=5")
+    response = client.get("/api/v1/features/churn-by-feature?feature=has_bad_review&buckets=5")
     assert response.status_code == 200
     data = response.json()
     assert data["feature"] == "has_bad_review"
@@ -192,38 +192,38 @@ def test_features_churn_by_feature_discrete():
 
 def test_features_distribution_validation_boundaries():
     # Missing required 'feature' param -> 422
-    resp_missing = client.get("/features/distribution")
+    resp_missing = client.get("/api/v1/features/distribution")
     assert resp_missing.status_code == 422
 
     # bins < 2 -> 422
-    resp_too_low = client.get("/features/distribution?feature=monetary_value&bins=1")
+    resp_too_low = client.get("/api/v1/features/distribution?feature=monetary_value&bins=1")
     assert resp_too_low.status_code == 422
 
     # bins > 100 -> 422
-    resp_too_high = client.get("/features/distribution?feature=monetary_value&bins=101")
+    resp_too_high = client.get("/api/v1/features/distribution?feature=monetary_value&bins=101")
     assert resp_too_high.status_code == 422
 
 
 def test_features_churn_by_feature_validation_boundaries():
     # Missing required 'feature' param -> 422
-    resp_missing = client.get("/features/churn-by-feature")
+    resp_missing = client.get("/api/v1/features/churn-by-feature")
     assert resp_missing.status_code == 422
 
     # buckets < 2 -> 422
-    resp_too_low = client.get("/features/churn-by-feature?feature=monetary_value&buckets=1")
+    resp_too_low = client.get("/api/v1/features/churn-by-feature?feature=monetary_value&buckets=1")
     assert resp_too_low.status_code == 422
 
     # buckets > 20 -> 422
-    resp_too_high = client.get("/features/churn-by-feature?feature=monetary_value&buckets=25")
+    resp_too_high = client.get("/api/v1/features/churn-by-feature?feature=monetary_value&buckets=25")
     assert resp_too_high.status_code == 422
 
 
 def test_feature_not_found_errors():
-    resp_dist = client.get("/features/distribution?feature=invalid_feature_xyz")
+    resp_dist = client.get("/api/v1/features/distribution?feature=invalid_feature_xyz")
     assert resp_dist.status_code in [400, 500]
     assert "Could not calculate distribution" in resp_dist.json()["detail"]
 
-    resp_churn = client.get("/features/churn-by-feature?feature=invalid_feature_xyz")
+    resp_churn = client.get("/api/v1/features/churn-by-feature?feature=invalid_feature_xyz")
     assert resp_churn.status_code in [400, 500]
     assert "Could not calculate churn by feature" in resp_churn.json()["detail"]
 
