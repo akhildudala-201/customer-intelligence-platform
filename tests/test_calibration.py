@@ -30,6 +30,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.metrics import brier_score_loss
+from sklearn.preprocessing import RobustScaler
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -399,8 +400,14 @@ class TestCalibratedChurnModel(unittest.TestCase):
     def test_save_load_round_trip(self):
         X, y = make_overconfident_data(n=500)
         platt = cal.PlattScaling().fit(X["p"], y)
+        scaler = RobustScaler().fit(X)
         original = cal.CalibratedChurnModel(
-            ProbColumnModel(), platt, method="sigmoid", threshold=0.37, model_name="LightGBM"
+            ProbColumnModel(),
+            platt,
+            method="sigmoid",
+            threshold=0.37,
+            model_name="LightGBM",
+            feature_scaler=scaler,
         )
         with tempfile.TemporaryDirectory() as d:
             path = original.save(Path(d) / "nested" / "dir" / "model.joblib")  # parent dirs created
@@ -411,6 +418,10 @@ class TestCalibratedChurnModel(unittest.TestCase):
         self.assertEqual(loaded.threshold, 0.37)
         self.assertEqual(loaded.model_name, "LightGBM")
         self.assertEqual(loaded.feature_cols, ["p"])
+        np.testing.assert_allclose(
+            loaded.feature_scaler.transform(X),
+            scaler.transform(X),
+        )
         np.testing.assert_allclose(loaded.predict_proba(X), original.predict_proba(X))
         np.testing.assert_array_equal(loaded.predict(X), original.predict(X))
 
@@ -423,6 +434,7 @@ class TestCalibratedChurnModel(unittest.TestCase):
         self.assertEqual(bundle["source_positive_class"], 1)
         for key in ("base_model", "calibrator", "method", "threshold", "model_name", "feature_cols"):
             self.assertIn(key, bundle)
+        self.assertIn("feature_scaler", bundle)
 
     def test_load_applies_defaults_for_missing_optional_keys(self):
         with tempfile.TemporaryDirectory() as d:
@@ -804,7 +816,14 @@ class TestLoadLatestLightGBMModel(QuietTestCase):
 
     @staticmethod
     def _bundle(positive_class=1, **extra):
-        return {"model": StubSkModel(), "feature_cols": ["p"], "positive_class": positive_class, **extra}
+        scaler = RobustScaler().fit(pd.DataFrame({"p": [0.0, 1.0]}))
+        return {
+            "model": StubSkModel(),
+            "feature_cols": ["p"],
+            "feature_scaler": scaler,
+            "positive_class": positive_class,
+            **extra,
+        }
 
     def test_no_artifacts_returns_none_with_warning(self):
         self.assertIsNone(cal.load_latest_lightgbm_model())
@@ -855,6 +874,14 @@ class TestLoadLatestLightGBMModel(QuietTestCase):
     def test_missing_model_or_feature_cols_key_is_wrong_schema(self):
         self._save("lgb_churn_model_20240101_000000.joblib", {"model": StubSkModel(), "positive_class": 1})
         self.assertIsNone(cal.load_latest_lightgbm_model())
+
+    def test_missing_scaler_rejects_legacy_training_artifact(self):
+        bundle = self._bundle()
+        del bundle["feature_scaler"]
+        self._save("lgb_churn_model_20240101_000000.joblib", bundle)
+
+        with self.assertRaisesRegex(ValueError, "does not contain the fitted feature scaler"):
+            cal.load_latest_lightgbm_model()
 
     def test_only_invalid_files_returns_none(self):
         (self.model_dir / "lgb_churn_model_20240101_000000.joblib").write_bytes(b"garbage")

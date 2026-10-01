@@ -80,6 +80,16 @@ def test_select_features_returns_list_of_strings():
     assert all(isinstance(c, str) for c in result)
 
 
+def test_select_features_drops_constant_columns():
+    X = pd.DataFrame({
+        "signal": [0, 0, 0, 0, 1, 1, 1, 1],
+        "constant": [1, 1, 1, 1, 1, 1, 1, 1],
+    })
+    y = pd.Series([0, 0, 0, 0, 1, 1, 1, 1])
+
+    assert fp.select_features(X, y) == ["signal"]
+
+
 # ==========================================================
 # leakage regression test (would have caught today's regression)
 # ==========================================================
@@ -154,6 +164,21 @@ def test_apply_scaler_preserves_columns_and_index():
 
     assert list(scaled.columns) == list(X_other.columns)
     assert list(scaled.index) == list(X_other.index)
+
+
+def test_save_scaler_persists_fitted_feature_names(tmp_path):
+    X_train = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [4.0, 5.0, 6.0]})
+    scaler = fp.fit_scaler(X_train)
+
+    path = fp.save_scaler(scaler, tmp_path / "models" / "scaler.joblib")
+    restored = fp.joblib.load(path)
+
+    assert path.is_file()
+    assert list(restored.feature_names_in_) == list(X_train.columns)
+    np.testing.assert_allclose(
+        restored.transform(X_train),
+        scaler.transform(X_train),
+    )
 
 
 # ==========================================================

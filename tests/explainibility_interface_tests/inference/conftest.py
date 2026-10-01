@@ -18,6 +18,8 @@ import pandas as pd
 import pytest
 
 from app.ml.explainibility_inference.inference.predict import ChurnPredictor, DEFAULT_MODEL_PATH, DEFAULT_REASON_CODES_PATH
+from app.ml.explainibility_inference.inference.model_adapter import ChurnModelAdapter
+from app.ml.explainibility_inference.inference.model_loader import load_model
 
 # Real customer_unique_id format from the Olist dataset (32-char hex, see
 # data/olist_customers_dataset.csv) rather than a placeholder ID, so tests
@@ -120,6 +122,15 @@ def churn_predictor() -> ChurnPredictor:
     Requires MODEL_PATH and MODEL_VERSION to be set in the environment —
     there is no dummy model to fall back to (see app/ml/inference/predict.py).
     """
+    if DEFAULT_MODEL_PATH is None:
+        pytest.skip("No configured model artifact is available.")
+    artifact = load_model(DEFAULT_MODEL_PATH)
+    if ChurnModelAdapter(artifact).feature_scaler is None:
+        pytest.skip(
+            "The configured model artifact predates persisted training scalers; "
+            "retrain and recalibrate before running inference integration tests."
+        )
+
     return ChurnPredictor(
         model_path=DEFAULT_MODEL_PATH, reason_codes_path=DEFAULT_REASON_CODES_PATH
     )

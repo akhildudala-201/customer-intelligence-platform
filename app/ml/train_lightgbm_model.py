@@ -101,6 +101,7 @@ CONFIG = {
     "DRIFT_CHECK": True,
     "PSI_SHIFT_THRESHOLD": 0.25,
     "OUTPUT_DIR": str(PROJECT_ROOT / "outputs" / "models") + os.sep,
+    "SCALER_PATH": str(PROJECT_ROOT / "outputs" / "models" / "feature_scaler.joblib"),
     "TIMESTAMP": datetime.now().strftime("%Y%m%d_%H%M%S"),
 }
 
@@ -829,16 +830,35 @@ def _portable_config() -> dict:
 def save_model(model, feature_cols: list, results: dict, mode: str, value: float, positive_class: int, best_params: dict):
     """Serialize model artifact and metadata to disk.
 
-    Artifact keys are unchanged, so calibration.py, model_comparison.py,
-    threshold_analysis.py and the inference API keep working.
+    Retains the existing artifact fields and adds the fitted preprocessing
+    object required by calibration.py and online inference.
     """
     banner("SAVING MODEL")
     ts = CONFIG["TIMESTAMP"]
     model_path = f"{CONFIG['OUTPUT_DIR']}lgb_churn_model_{ts}.joblib"
+    scaler_path = Path(CONFIG["SCALER_PATH"])
+    if not scaler_path.is_file():
+        raise FileNotFoundError(
+            f"Fitted feature scaler not found at '{scaler_path}'. "
+            "Run feature_selection_and_scaling.py before training so inference "
+            "uses the same preprocessing as the model."
+        )
+    feature_scaler = joblib.load(scaler_path)
+    scaler_feature_names = getattr(feature_scaler, "feature_names_in_", None)
+    scaler_features = (
+        list(scaler_feature_names) if scaler_feature_names is not None else []
+    )
+    if scaler_features != list(feature_cols):
+        raise ValueError(
+            "Fitted feature scaler columns do not match the model columns. "
+            f"Scaler: {scaler_features}; model: {list(feature_cols)}"
+        )
 
     artifact = {
         "model": model,
         "feature_cols": list(feature_cols),
+        "feature_scaler": feature_scaler,
+        "preprocessing": {"scaler": "RobustScaler"},
         "operating_point": {"mode": mode, "value": value},
         "positive_class": positive_class,
         "probability_definition": f"P(churn_label == {positive_class})",
@@ -854,7 +874,11 @@ def save_model(model, feature_cols: list, results: dict, mode: str, value: float
 
     meta_path = f"{CONFIG['OUTPUT_DIR']}metadata_{ts}.json"
     with open(meta_path, "w") as fh:
-        json.dump({k: v for k, v in artifact.items() if k != "model"}, fh, indent=2, default=str)
+        metadata = {
+            k: v for k, v in artifact.items()
+            if k not in {"model", "feature_scaler"}
+        }
+        json.dump(metadata, fh, indent=2, default=str)
     log_message(f"Saved {meta_path}")
     return model_path, meta_path
 

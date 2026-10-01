@@ -446,6 +446,13 @@ The ML-only pipeline includes:
 
 It does not run cohort analysis, historical trends, forecasting, or batch
 prediction generation. Use `scripts/run_pipeline.py` for the complete workflow.
+Feature preparation must run before LightGBM training: it writes the
+`model_ready_*` tables and saves the fitted `RobustScaler` to
+`outputs/models/feature_scaler.joblib`. Training embeds that scaler in the
+model artifact, and calibration carries it into the calibrated artifact so
+online prediction and SHAP use the same transformation as training. Existing
+artifacts without the fitted scaler are rejected by online inference; retrain
+and recalibrate before deploying them.
 
 ### 4. Run individual ML modules
 

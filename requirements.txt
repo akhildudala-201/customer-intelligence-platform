@@ -7,7 +7,7 @@ python-dotenv==1.2.3
 PyYAML==6.0.3
 
 # Machine Learning & Class Imbalance Handling
-scikit-learn==1.9.0
+scikit-learn==1.9.1
 lightgbm==4.7.0
 optuna==5.0.0
 joblib==1.6.0

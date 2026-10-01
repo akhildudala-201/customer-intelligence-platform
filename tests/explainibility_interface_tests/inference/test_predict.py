@@ -11,6 +11,7 @@ way FastAPI / the segmentation module actually calls it.
 from __future__ import annotations
 
 import json
+from importlib import import_module
 
 import pandas as pd
 import pytest
@@ -22,7 +23,16 @@ from app.ml.explainibility_inference.inference.feature_contract import (
     validate_features,
 )
 from app.ml.explainibility_inference.inference.model_loader import ModelArtifactNotFoundError, load_model
-from app.ml.explainibility_inference.inference.predict import DEFAULT_MODEL_PATH, DEFAULT_REASON_CODES_PATH, MODEL_VERSION
+from app.ml.explainibility_inference.inference.predict import (
+    ChurnPredictor,
+    DEFAULT_MODEL_PATH,
+    DEFAULT_REASON_CODES_PATH,
+    MODEL_VERSION,
+)
+
+predict_module = import_module(
+    "app.ml.explainibility_inference.inference.predict"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +64,25 @@ def test_model_loading_missing_artifact_raises(tmp_path):
     missing_path = tmp_path / "does_not_exist.joblib"
     with pytest.raises(ModelArtifactNotFoundError):
         load_model(missing_path)
+
+
+def test_predictor_rejects_artifact_without_training_scaler(monkeypatch, tmp_path):
+    class ModelWithoutScaler:
+        def predict_proba(self, X):
+            return [[0.5, 0.5] for _ in range(len(X))]
+
+    monkeypatch.setattr(
+        predict_module,
+        "load_model",
+        lambda _: {
+            "model": ModelWithoutScaler(),
+            "feature_cols": REQUIRED_FEATURES,
+            "positive_class": 1,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="does not contain the fitted feature scaler"):
+        ChurnPredictor(model_path=tmp_path / "legacy.joblib", model_version="test")
 
 
 # ---------------------------------------------------------------------------

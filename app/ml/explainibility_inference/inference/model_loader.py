@@ -9,6 +9,7 @@ import joblib
 class ModelArtifactNotFoundError(FileNotFoundError):
     pass
 
+
 def load_model(path: str | Path | None) -> Any:
 
     if path is None:
@@ -35,3 +36,4 @@ def load_model(path: str | Path | None) -> Any:
         ) from exc
 
     return model
+

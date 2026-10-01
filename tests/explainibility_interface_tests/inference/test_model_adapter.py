@@ -18,7 +18,9 @@ tests are about the unwrapping/inversion logic, not about LightGBM itself.
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
+from sklearn.preprocessing import RobustScaler
 
 from app.ml.explainibility_inference.inference.feature_contract import REQUIRED_FEATURES, check_contract_matches_model
 from app.ml.explainibility_inference.inference.model_adapter import ChurnModelAdapter
@@ -64,6 +66,41 @@ def test_adapter_unwraps_dict_artifact(sample_X):
     proba = adapter.predict_probability(sample_X)
     assert np.allclose(proba, 0.3)
     assert isinstance(adapter.get_shap_model(), _FakeModel)
+
+
+def test_adapter_scales_in_training_feature_order(sample_X):
+    training = pd.concat([sample_X] * 3, ignore_index=True)
+    training["monetary_value"] = [100.0, 200.0, 400.0]
+    training["avg_payment_installments"] = [1.0, 2.0, 5.0]
+    scaler = RobustScaler().fit(training[REQUIRED_FEATURES])
+    artifact = {
+        "model": _FakeModel(),
+        "feature_cols": REQUIRED_FEATURES,
+        "feature_scaler": scaler,
+    }
+    adapter = ChurnModelAdapter(artifact)
+
+    shuffled = sample_X[list(reversed(REQUIRED_FEATURES))]
+    scaled = adapter.transform_features(shuffled)
+
+    assert list(scaled.columns) == list(REQUIRED_FEATURES)
+    np.testing.assert_allclose(
+        scaled.to_numpy(),
+        scaler.transform(sample_X[REQUIRED_FEATURES]),
+    )
+
+
+def test_adapter_rejects_scaler_feature_order_mismatch(sample_X):
+    scaler = RobustScaler().fit(sample_X[["monetary_value", "avg_review_score"]])
+    artifact = {
+        "model": _FakeModel(),
+        "feature_cols": ["avg_review_score", "monetary_value"],
+        "feature_scaler": scaler,
+    }
+    adapter = ChurnModelAdapter(artifact)
+
+    with pytest.raises(ValueError, match="feature columns do not match"):
+        adapter.transform_features(sample_X)
 
 
 def test_adapter_dict_without_model_key_treated_as_model(sample_X):

@@ -90,6 +90,12 @@ class ChurnPredictor:
         raw_model = load_model(model_path)
         check_contract_matches_model(raw_model)
         self._adapter = ChurnModelAdapter(raw_model)
+        if self._adapter.feature_scaler is None:
+            raise RuntimeError(
+                "The model artifact does not contain the fitted feature scaler. "
+                "Re-run feature selection/scaling, LightGBM training, and "
+                "calibration before enabling online predictions."
+            )
         model_feature_names = self._adapter.feature_names or REQUIRED_FEATURES
         self._explainer = ChurnShapExplainer(
             self._adapter.get_shap_model(), feature_names=model_feature_names
@@ -107,7 +113,7 @@ class ChurnPredictor:
         )
 
         ids = validated[ID_COLUMN].tolist()
-        X = validated[model_feature_names]
+        X = self._adapter.transform_features(validated[model_feature_names])
 
         probabilities = self._adapter.predict_probability(X)
         shap_records = self._explainer.explain(X)

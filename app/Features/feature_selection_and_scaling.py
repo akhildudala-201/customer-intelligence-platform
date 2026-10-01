@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 from typing import List
 
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.feature_selection import chi2
@@ -20,8 +21,9 @@ except ModuleNotFoundError:
     from Database.database import engine
 
 BASE_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = BASE_DIR.parent
+PROJECT_ROOT = BASE_DIR.parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
+SCALER_PATH = OUTPUT_DIR / "models" / "feature_scaler.joblib"
 DB_TABLE_NAME = "features_encoded"
 
 LABEL_COLUMN = "churn_label"
@@ -89,7 +91,12 @@ def select_features(
             if p >= chi2_alpha:
                 to_drop_chi2.add(col)
 
-    return [c for c in X_train.columns if c not in to_drop_corr and c not in to_drop_chi2]
+    return [
+        c for c in X_train.columns
+        if c not in to_drop_corr
+        and c not in to_drop_chi2
+        and X_train[c].nunique(dropna=False) > 1
+    ]
 
 
 def fit_scaler(X_train: pd.DataFrame) -> RobustScaler:
@@ -100,6 +107,13 @@ def fit_scaler(X_train: pd.DataFrame) -> RobustScaler:
 
 def apply_scaler(X: pd.DataFrame, fitted: RobustScaler) -> pd.DataFrame:
     return pd.DataFrame(fitted.transform(X), columns=X.columns, index=X.index)
+
+
+def save_scaler(scaler: RobustScaler, path: Path = SCALER_PATH) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(scaler, path)
+    return path
+
 
 def load_encoded_data():
     df = pd.read_sql(f"SELECT * FROM `{DB_TABLE_NAME}`", con=engine)
@@ -203,9 +217,15 @@ def main():
     print(f"Kept {len(keep_cols)} of {X_train.shape[1]} columns")
     X_train, X_val, X_test = X_train[keep_cols], X_val[keep_cols], X_test[keep_cols]
 
-    X_train, X_val, X_test = run_scaling(X_train, X_val, X_test)
+    scaler = fit_scaler(X_train)
+    X_train, X_val, X_test = (
+        apply_scaler(X_train, scaler),
+        apply_scaler(X_val, scaler),
+        apply_scaler(X_test, scaler),
+    )
 
     save_outputs(X_train, X_val, X_test, y_train, y_val, y_test, ids_train, ids_val, ids_test)
+    save_scaler(scaler)
     print("Done.")
 
 

@@ -36,10 +36,12 @@ class ChurnModelAdapter:
 
     def __init__(self, model: SupportsPredictProba | dict):
         self.feature_names: list[str] | None = None
+        self.feature_scaler: Any | None = None
         if isinstance(model, dict) and "model" in model:
 
             self._artifact: dict | None = model
             self._model = model["model"]
+            self.feature_scaler = model.get("feature_scaler")
             feature_names = model.get("feature_cols")
             if feature_names:
                 self.feature_names = list(feature_names)
@@ -54,6 +56,9 @@ class ChurnModelAdapter:
 
             self._artifact = None
             self._model = _CalibratedArtifactShim(model)
+            self.feature_scaler = model.get("feature_scaler") or getattr(
+                model["base_model"], "feature_scaler", None
+            )
             feature_names = model.get("feature_cols")
             if feature_names:
                 self.feature_names = list(feature_names)
@@ -68,6 +73,39 @@ class ChurnModelAdapter:
                 feature_names = getattr(model, "feature_name_", None)
             if feature_names:
                 self.feature_names = list(feature_names)
+
+    def transform_features(self, X: pd.DataFrame) -> pd.DataFrame:
+        if self.feature_scaler is None:
+            return X
+
+        scaler_feature_names = getattr(
+            self.feature_scaler, "feature_names_in_", None
+        )
+        scaler_features = (
+            list(scaler_feature_names)
+            if scaler_feature_names is not None
+            else []
+        )
+        feature_names = self.feature_names or scaler_features
+        if not feature_names:
+            raise ValueError(
+                "The model artifact contains a scaler without feature names."
+            )
+        if scaler_features and scaler_features != feature_names:
+            raise ValueError(
+                "Model and scaler feature columns do not match. "
+                f"Model: {feature_names}; scaler: {scaler_features}"
+            )
+
+        missing = [name for name in feature_names if name not in X.columns]
+        if missing:
+            raise ValueError(
+                "Scaler expects feature column(s) not present in the input: "
+                f"{missing}"
+            )
+
+        scaled = self.feature_scaler.transform(X[feature_names])
+        return pd.DataFrame(scaled, columns=feature_names, index=X.index)
 
     def predict_probability(self, X: pd.DataFrame) -> np.ndarray:
 

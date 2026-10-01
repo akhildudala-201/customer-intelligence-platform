@@ -97,7 +97,8 @@ def db(tmp_path):
     revenue_rows().to_sql(svc.REVENUE_TABLE, engine, index=False)
     combined_rows().to_sql(svc.COMBINED_TABLE, engine, index=False)
     cohort_rows().to_sql(svc.COHORT_TABLE, engine, index=False)
-    return engine
+    yield engine
+    engine.dispose()
 
 
 def make_client(engine):

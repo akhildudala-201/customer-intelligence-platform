@@ -235,6 +235,7 @@ class CalibratedChurnModel:
         threshold: float = 0.5,
         model_name: str = "unknown",
         feature_cols: Optional[list] = None,
+        feature_scaler: Any = None,
     ):
         self.base_model = base_model
         self.calibrator = calibrator
@@ -248,6 +249,11 @@ class CalibratedChurnModel:
         # once this artifact is loaded, and silently skips the check.
         self.feature_cols = list(feature_cols) if feature_cols else list(
             getattr(base_model, "feature_cols", []) or []
+        )
+        self.feature_scaler = (
+            feature_scaler
+            if feature_scaler is not None
+            else getattr(base_model, "feature_scaler", None)
         )
 
     def raw_predict_proba(self, X: Union[pd.DataFrame, np.ndarray]) -> np.ndarray:
@@ -281,6 +287,10 @@ class CalibratedChurnModel:
                 "threshold": self.threshold,
                 "model_name": self.model_name,
                 "feature_cols": self.feature_cols,
+                "feature_scaler": self.feature_scaler,
+                "preprocessing": {"scaler": "RobustScaler"}
+                if self.feature_scaler is not None
+                else None,
                 # Informational only -- not read back by load() or by
                 # model_adapter.py, which derives orientation itself from
                 # base_model (_LGBAdapter)'s own positive_class. These
@@ -308,6 +318,7 @@ class CalibratedChurnModel:
             threshold=bundle.get("threshold", 0.5),
             model_name=bundle.get("model_name", "unknown"),
             feature_cols=bundle.get("feature_cols"),
+            feature_scaler=bundle.get("feature_scaler"),
         )
 
 
@@ -537,12 +548,19 @@ class _LGBAdapter:
 
     CHURN_TARGET_VALUE = 1
 
-    def __init__(self, sk_model, feature_cols, positive_class=None):
+    def __init__(
+        self,
+        sk_model,
+        feature_cols,
+        positive_class=None,
+        feature_scaler=None,
+    ):
         self.sk_model = sk_model
         self.feature_cols = feature_cols
         self.positive_class = (
             positive_class if positive_class is not None else self.CHURN_TARGET_VALUE
         )
+        self.feature_scaler = feature_scaler
         self.invert_proba = self.positive_class != self.CHURN_TARGET_VALUE
         if self.invert_proba:
             print(
@@ -586,6 +604,23 @@ def load_latest_lightgbm_model() -> Optional[Any]:
             log_message(f"Skipping '{candidate.name}': unexpected artifact schema.", "WARNING")
             continue
 
+        feature_scaler = bundle.get("feature_scaler")
+        if feature_scaler is None:
+            raise ValueError(
+                f"'{candidate.name}' does not contain the fitted feature scaler. "
+                "Run feature_selection_and_scaling.py and retrain before calibration."
+            )
+        scaler_feature_names = getattr(feature_scaler, "feature_names_in_", None)
+        scaler_features = (
+            list(scaler_feature_names) if scaler_feature_names is not None else []
+        )
+        if scaler_features != list(bundle["feature_cols"]):
+            raise ValueError(
+                f"'{candidate.name}' has scaler columns that do not match "
+                f"feature_cols. Scaler: {scaler_features}; "
+                f"model: {list(bundle['feature_cols'])}"
+            )
+
         # positive_class should always be present -- train_lightgbm_model.py's
         # save_model() always writes it (auto-detected or explicit, never
         # None). A missing OR invalid value means this artifact's true
@@ -611,7 +646,12 @@ def load_latest_lightgbm_model() -> Optional[Any]:
             )
 
         log_message(f"Loading latest LightGBM artifact: {candidate}")
-        return _LGBAdapter(bundle["model"], bundle["feature_cols"], positive_class)
+        return _LGBAdapter(
+            bundle["model"],
+            bundle["feature_cols"],
+            positive_class,
+            feature_scaler=feature_scaler,
+        )
 
     log_message("No valid LightGBM training artifact could be loaded.", "WARNING")
     return None

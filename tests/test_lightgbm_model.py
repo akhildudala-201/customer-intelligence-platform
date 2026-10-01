@@ -12,6 +12,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.preprocessing import RobustScaler
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ML_DIR = PROJECT_ROOT / "app" / "ml"
@@ -250,7 +251,11 @@ def test_save_model_bundle_and_reload(tmp_path, synthetic_imbalanced_data):
 
     # Temporarily override output dir to tmp_path
     original_out = CONFIG["OUTPUT_DIR"]
+    original_scaler_path = CONFIG["SCALER_PATH"]
     CONFIG["OUTPUT_DIR"] = str(tmp_path) + "/"
+    CONFIG["SCALER_PATH"] = str(tmp_path / "feature_scaler.joblib")
+    scaler = RobustScaler().fit(X)
+    joblib.dump(scaler, CONFIG["SCALER_PATH"])
     try:
         model_path, meta_path = save_model(
             model=model.model,
@@ -270,6 +275,7 @@ def test_save_model_bundle_and_reload(tmp_path, synthetic_imbalanced_data):
         assert "model" in bundle
         assert "feature_cols" in bundle
         assert bundle["feature_cols"] == list(X.columns)
+        assert list(bundle["feature_scaler"].feature_names_in_) == list(X.columns)
         assert bundle["operating_point"] == {"mode": "rate", "value": 0.05}
 
         reloaded_model = bundle["model"]
@@ -281,6 +287,8 @@ def test_save_model_bundle_and_reload(tmp_path, synthetic_imbalanced_data):
         with open(meta_path) as fh:
             meta = json.load(fh)
         assert meta["operating_point"]["value"] == 0.05
+        assert meta["preprocessing"]["scaler"] == "RobustScaler"
         assert meta["metrics"]["TEST"]["roc_auc"] == 0.90
     finally:
         CONFIG["OUTPUT_DIR"] = original_out
+        CONFIG["SCALER_PATH"] = original_scaler_path
