@@ -795,8 +795,6 @@ def merge_features(customer_base, feature_tables):
     print("\nMerging all feature groups...")
 
     features = customer_base.copy()
-    original_count = len(features)
-
     for name, table in feature_tables.items():
 
         print(f"  Merging {name}...")
@@ -806,29 +804,12 @@ def merge_features(customer_base, feature_tables):
                 f"{name} does not contain 'customer_unique_id'."
             )
 
-        duplicate_count = (
-            table["customer_unique_id"]
-            .duplicated()
-            .sum()
-        )
-
-        if duplicate_count > 0:
-            raise ValueError(
-                f"{name} contains "
-                f"{duplicate_count} duplicate customers."
-            )
-
         features = features.merge(
             table,
             on="customer_unique_id",
             how="left",
             validate="one_to_one"
         )
-
-        if len(features) != original_count:
-            raise ValueError(
-                f"Customer count changed after merging {name}."
-            )
 
     return features
 
@@ -976,6 +957,9 @@ def validate_features(features, customer_base):
         "dominant_product_category",
         "avg_items_per_order",
         "avg_delivery_days",
+        "avg_delivery_delay_days",
+        "is_delayed_delivery",
+        "has_bad_review",
         "avg_product_weight_g",
         "freight_ratio",
         "has_review_comment",
