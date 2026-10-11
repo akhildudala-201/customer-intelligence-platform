@@ -5,6 +5,9 @@ import os
 _logical_cpu_count = os.cpu_count() or 2
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(max(1, _logical_cpu_count - 1)))
 
+from pathlib import Path
+
+import joblib
 import pandas as pd
 from sqlalchemy import text
 
@@ -33,7 +36,8 @@ SEGMENTS_TABLE_NAME = "customer_segments"
 K_SEARCH_RANGE = range(2, 8)
 SAMPLE_ROW_COUNT = 5
 
-K = 3
+K = 3  # pinned; the k search below is shown for reference only
+MODEL_PATH = Path("outputs/models/customer_segmentation_gmm.joblib")
 
 _SECTION_RULE = "=" * 78
 _STEP_RULE = "-" * 78
@@ -144,7 +148,7 @@ def generate_segments(
 
     print(_STEP_RULE)
     print("Step 2/6 — scaling features (StandardScaler + hybrid weights)...")
-    scaled_df, _scaler = scale_features(scoreable_df)
+    scaled_df, scaler = scale_features(scoreable_df)
     print(
         f"  -> scaled matrix shape: {scaled_df.shape} "
         "(behavioural features weight 1.0, churn_probability weight 0.40, "
@@ -159,9 +163,8 @@ def generate_segments(
     k_evaluation = evaluate_k_range(scaled_df, k_range=K_SEARCH_RANGE)
     auto_best_k = select_best_k(k_evaluation)
     print(_round_for_display(k_evaluation).to_string(index=False))
-    if K is not None:
-        best_k = K
-        print(f"  -> Selected k = {best_k} ")
+    best_k = K if K is not None else auto_best_k
+    print(f"  -> Selected k = {best_k} (automatic suggestion: {auto_best_k})")
 
     print(_STEP_RULE)
     print(f"Step 4/6 — training the final GMM (k={best_k}) and assigning clusters...")
@@ -180,6 +183,19 @@ def generate_segments(
     print(_round_for_display(risk_tier_mix).to_string(index=False))
     print("  Segment summary (label + size — the headline result of this step):")
     print(_build_segment_summary(profile, label_map).to_string(index=False))
+
+    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(
+        {
+            "scaler": scaler,
+            "model": final_model,
+            "label_map": label_map,
+            "features": SEGMENTATION_FEATURES,
+            "k": best_k,
+        },
+        MODEL_PATH,
+    )
+    print(f"  -> saved scaler + GMM + label map to {MODEL_PATH}")
 
     print(_STEP_RULE)
     print("Step 6/6 — assembling the final segments table...")
