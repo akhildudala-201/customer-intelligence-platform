@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class ChurnPredictionResponse(BaseModel):
@@ -10,7 +10,3 @@ class ChurnPredictionResponse(BaseModel):
     reason_codes: list[str]
     model_version: str
     scored_at: str
-
-
-class BatchPredictRequest(BaseModel):
-    customer_unique_ids: list[str] = Field(..., min_length=1)
