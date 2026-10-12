@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+
+logger = logging.getLogger(__name__)
 
 TABLE_NAME = "customer_cohort_analysis"
 INPUT_COLUMNS = [
@@ -191,23 +194,7 @@ def calculate_cohort_analysis(
     exclude_censored: bool = True,
     generated_date: date | str | None = None,
 ) -> pd.DataFrame:
-    """Calculate cohort retention, repeat purchase, churn, and cumulative CLV.
 
-    ``min_orders`` is deliberately local to this module.  The default keeps
-    every valid purchaser (including one-time customers), while callers can
-    require repeat-capable customers without altering other model datasets.
-
-    ``final_churn_rate (%)`` is the final project-label rate for the cohort.
-    ``monthly_churn_rate (%)`` assigns a labeled customer's churn event to
-    the calendar month when the canonical inactivity window expires, divided
-    by customers still at risk at the start of that month.
-    ``cumulative_churn_rate (%)`` divides churn events through the current
-    month by the initial eligible at-risk population.
-
-    ``repeat_purchase_rate (%)`` counts second purchases occurring in the
-    current relative month. ``cumulative_repeat_purchase_rate (%)`` counts
-    customers whose second purchase occurred by the current relative month.
-    """
     if min_orders < 1:
         raise ValueError("min_orders must be at least 1")
     _require_columns(scoped_input, set(INPUT_COLUMNS), "scoped input")
@@ -427,7 +414,15 @@ def write_cohort_analysis(
     if_exists: str = "replace",
 ) -> None:
     """Write the final table without touching any other analytics tables."""
-    result.to_sql(TABLE_NAME, con=connection, if_exists=if_exists, index=False)
+    if result is None:
+        raise ValueError("result cannot be None.")
+    if connection is None:
+        raise ValueError("database connection is required to write cohort analysis.")
+    try:
+        result.to_sql(TABLE_NAME, con=connection, if_exists=if_exists, index=False)
+    except Exception as exc:  # pragma: no cover - defensive safety net
+        logger.exception("Failed to write cohort analysis to database: %s", exc)
+        raise
 
 
 def run(
@@ -439,19 +434,26 @@ def run(
     generated_date: date | str | None = None,
 ) -> pd.DataFrame:
     """Build the database-backed extract, calculate cohorts, and persist it."""
-    if connection is None and data_dir is None:
-        from app.Database.database import engine
+    try:
+        if connection is None and data_dir is None:
+            from app.Database.database import engine
 
-        connection = engine
-    scoped = load_scoped_input(data_dir=data_dir, connection=connection)
-    result = calculate_cohort_analysis(
-        scoped, min_orders=min_orders, generated_date=generated_date
-    )
-    if output_connection is None and connection is not None:
-        output_connection = connection
-    if output_connection is not None:
-        write_cohort_analysis(result, output_connection)
-    return result
+            connection = engine
+        scoped = load_scoped_input(data_dir=data_dir, connection=connection)
+        result = calculate_cohort_analysis(
+            scoped, min_orders=min_orders, generated_date=generated_date
+        )
+        if output_connection is None and connection is not None:
+            output_connection = connection
+        if output_connection is not None:
+            write_cohort_analysis(result, output_connection)
+        return result
+    except (ValueError, TypeError, FileNotFoundError) as exc:
+        logger.error("Cohort analysis run failed: %s", exc)
+        raise
+    except Exception as exc:  # pragma: no cover - defensive safety net
+        logger.exception("Unexpected cohort analysis failure: %s", exc)
+        raise
 
 
 def main() -> None:
