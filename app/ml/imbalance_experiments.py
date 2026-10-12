@@ -1,5 +1,6 @@
 """Class imbalance analysis, resampling strategies, and model benchmarking."""
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -16,6 +17,8 @@ from sklearn.metrics import (
     confusion_matrix,
 )
 
+logger = logging.getLogger(__name__)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,8 +31,6 @@ from app.ml.logistic_regression import (
     load_model_ready_data,
 )
 from app.ml.train_lightgbm_model import ChurnLightGBM
-from app.ml.metrics import find_optimal_threshold
-
 
 def analyze_class_imbalance(
     y_train: Union[pd.Series, np.ndarray],
@@ -203,6 +204,15 @@ def run_imbalance_experiments(
     model_type: str = "logistic_regression",
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """Evaluate multiple class weighting and resampling strategies on test data."""
+    if X_train is None or y_train is None or X_val is None or y_val is None or X_test is None or y_test is None:
+        raise ValueError("All training, validation, and test data inputs are required.")
+    if len(X_train) != len(y_train):
+        raise ValueError("X_train and y_train must have the same number of rows.")
+    if len(X_val) != len(y_val):
+        raise ValueError("X_val and y_val must have the same number of rows.")
+    if len(X_test) != len(y_test):
+        raise ValueError("X_test and y_test must have the same number of rows.")
+
     strategies = [
         ("1. Unweighted Baseline", {"class_weight": None, "resample": None}),
         ("2. Cost-Sensitive (5:1)", {"class_weight": {0: 5.0, 1: 1.0}, "resample": None}),
@@ -216,58 +226,86 @@ def run_imbalance_experiments(
 
     results_list = []
     trained_models = {}
-
     y_test_arr = np.asarray(y_test).astype(int)
 
     for name, config in strategies:
-        print(f"[{model_type.upper()}] Running Experiment: {name}...")
+        try:
+            print(f"[{model_type.upper()}] Running Experiment: {name}...")
 
-        X_tr = X_train.copy()
-        y_tr = y_train.copy()
+            X_tr = X_train.copy()
+            y_tr = y_train.copy()
 
-        # Apply resampling if configured
-        if config["resample"]:
-            rtype, ratio = config["resample"]
-            if rtype == "under":
-                X_tr, y_tr = random_undersample(X_tr, y_tr, majority_to_minority_ratio=ratio)
-            elif rtype == "over":
-                X_tr, y_tr = random_oversample(X_tr, y_tr, majority_to_minority_ratio=ratio)
+            if config["resample"]:
+                rtype, ratio = config["resample"]
+                if rtype == "under":
+                    X_tr, y_tr = random_undersample(
+                        X_tr, y_tr, majority_to_minority_ratio=ratio
+                    )
+                elif rtype == "over":
+                    X_tr, y_tr = random_oversample(
+                        X_tr, y_tr, majority_to_minority_ratio=ratio
+                    )
+                else:
+                    raise ValueError(f"Unsupported resampling type '{rtype}'.")
 
-        # Train model
-        if model_type.lower() in ("lightgbm", "lgbm"):
-            model = ChurnLightGBM(class_weight=config["class_weight"])
-        elif model_type.lower() in ("logistic_regression", "logreg", "lr"):
-            model = ChurnLogisticRegression(class_weight=config["class_weight"])
-        else:
-            raise ValueError(f"Unsupported model_type '{model_type}'. Use 'logistic_regression' or 'lightgbm'.")
+            if model_type.lower() in ("lightgbm", "lgbm"):
+                model = ChurnLightGBM(class_weight=config["class_weight"])
+            elif model_type.lower() in ("logistic_regression", "logreg", "lr"):
+                model = ChurnLogisticRegression(class_weight=config["class_weight"])
+            else:
+                raise ValueError(
+                    f"Unsupported model_type '{model_type}'. Use 'logistic_regression' or 'lightgbm'."
+                )
 
-        model.fit(X_tr, y_tr)
+            model.fit(X_tr, y_tr)
+            best_t, _ = model.tune_threshold(X_val, y_val, metric=tune_metric)
+            probs = model.predict_proba(X_test)
+            preds = (probs >= best_t).astype(int)
+            metrics = evaluate_strategy_predictions(
+                y_test_arr, preds, probs, threshold=best_t
+            )
+            trained_models[name] = {"model": model, "metrics": metrics}
 
-        # Tune threshold on validation split
-        best_t, _ = model.tune_threshold(X_val, y_val, metric=tune_metric)
-
-        # Evaluate on test split
-        probs = model.predict_proba(X_test)
-        preds = (probs >= best_t).astype(int)
-        metrics = evaluate_strategy_predictions(y_test_arr, preds, probs, threshold=best_t)
-
-        trained_models[name] = {"model": model, "metrics": metrics}
-
-        cm = metrics["confusion_matrix"]
-        results_list.append({
-            "Strategy": name,
-            "Tuned Thresh": metrics["threshold"],
-            "Balanced Acc": metrics["balanced_accuracy"],
-            "Retained Recall (TN%)": f"{metrics['retained_recall_tn_rate'] * 100:.1f}%",
-            "Retained Prec": f"{metrics['retained_precision'] * 100:.1f}%",
-            "Churn Recall (TP%)": f"{metrics['churn_recall_tp_rate'] * 100:.1f}%",
-            "ROC-AUC": metrics["roc_auc"],
-            "PR-AUC": metrics["pr_auc"],
-            "TN": cm["tn"],
-            "FP": cm["fp"],
-            "FN": cm["fn"],
-            "TP": cm["tp"],
-        })
+            cm = metrics["confusion_matrix"]
+            results_list.append(
+                {
+                    "Strategy": name,
+                    "Tuned Thresh": metrics["threshold"],
+                    "Balanced Acc": metrics["balanced_accuracy"],
+                    "Retained Recall (TN%)": f"{metrics['retained_recall_tn_rate'] * 100:.1f}%",
+                    "Retained Prec": f"{metrics['retained_precision'] * 100:.1f}%",
+                    "Churn Recall (TP%)": f"{metrics['churn_recall_tp_rate'] * 100:.1f}%",
+                    "ROC-AUC": metrics["roc_auc"],
+                    "PR-AUC": metrics["pr_auc"],
+                    "TN": cm["tn"],
+                    "FP": cm["fp"],
+                    "FN": cm["fn"],
+                    "TP": cm["tp"],
+                }
+            )
+        except Exception as exc:  # pragma: no cover - defensive fallback for noisy strategies
+            logger.exception(
+                "Experiment '%s' failed for model_type '%s': %s",
+                name,
+                model_type,
+                exc,
+            )
+            results_list.append(
+                {
+                    "Strategy": name,
+                    "Tuned Thresh": None,
+                    "Balanced Acc": None,
+                    "Retained Recall (TN%)": "ERROR",
+                    "Retained Prec": "ERROR",
+                    "Churn Recall (TP%)": "ERROR",
+                    "ROC-AUC": None,
+                    "PR-AUC": None,
+                    "TN": None,
+                    "FP": None,
+                    "FN": None,
+                    "TP": None,
+                }
+            )
 
     results_df = pd.DataFrame(results_list)
     return results_df, trained_models
@@ -305,75 +343,96 @@ def _dataframe_to_markdown(df: pd.DataFrame) -> str:
 
 def main():
     """Run imbalance analysis and benchmark suite for Logistic Regression and LightGBM."""
-    print("Loading dataset...")
-    X_train, y_train, X_val, y_val, X_test, y_test = load_model_ready_data()
+    try:
+        print("Loading dataset...")
+        X_train, y_train, X_val, y_val, X_test, y_test = load_model_ready_data()
 
-    print("\nPerforming Class Imbalance Analysis...")
-    analysis = analyze_class_imbalance(y_train, y_val, y_test)
-    report_text = format_imbalance_report(analysis)
-    print(report_text)
+        print("\nPerforming Class Imbalance Analysis...")
+        analysis = analyze_class_imbalance(y_train, y_val, y_test)
+        report_text = format_imbalance_report(analysis)
+        print(report_text)
 
-    reports_dir = PROJECT_ROOT / "outputs" / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
+        reports_dir = PROJECT_ROOT / "outputs" / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Logistic Regression Imbalance Experiments
-    print("\n" + "=" * 60)
-    print("RUNNING LOGISTIC REGRESSION IMBALANCE EXPERIMENTS")
-    print("=" * 60)
-    logreg_df, _ = run_imbalance_experiments(
-        X_train, y_train, X_val, y_val, X_test, y_test, tune_metric="balanced_accuracy", model_type="logistic_regression"
-    )
-    print("\nLOGISTIC REGRESSION IMBALANCE EXPERIMENTS TABLE:")
-    print(logreg_df.to_string(index=False))
+        # 1. Logistic Regression Imbalance Experiments
+        print("\n" + "=" * 60)
+        print("RUNNING LOGISTIC REGRESSION IMBALANCE EXPERIMENTS")
+        print("=" * 60)
+        logreg_df, _ = run_imbalance_experiments(
+            X_train,
+            y_train,
+            X_val,
+            y_val,
+            X_test,
+            y_test,
+            tune_metric="balanced_accuracy",
+            model_type="logistic_regression",
+        )
+        print("\nLOGISTIC REGRESSION IMBALANCE EXPERIMENTS TABLE:")
+        print(logreg_df.to_string(index=False))
 
-    logreg_csv_path = reports_dir / "imbalance_experiments.csv"
-    logreg_df.to_csv(logreg_csv_path, index=False)
+        logreg_csv_path = reports_dir / "imbalance_experiments.csv"
+        logreg_df.to_csv(logreg_csv_path, index=False)
 
-    logreg_md_path = reports_dir / "imbalance_experiments_report.md"
-    best_logreg = logreg_df.sort_values("Balanced Acc", ascending=False).iloc[0]
-    with logreg_md_path.open("w", encoding="utf-8") as f:
-        f.write("# Class Imbalance Experiments - Logistic Regression\n\n")
-        f.write("## 1. Imbalance Analysis\n\n```text\n")
-        f.write(report_text)
-        f.write("\n```\n\n## 2. Benchmark Results\n\n")
-        f.write(_dataframe_to_markdown(logreg_df))
-        f.write("\n\n## 3. Findings & Recommendation\n\n")
-        f.write(f"- **Best Strategy**: `{best_logreg['Strategy']}`\n")
-        f.write(f"- **Top Balanced Accuracy**: `{best_logreg['Balanced Acc']}`\n")
-        f.write(f"- **Retained Customer Detection**: `{best_logreg['Retained Recall (TN%)']}` of minority class captured.\n")
+        logreg_md_path = reports_dir / "imbalance_experiments_report.md"
+        best_logreg = logreg_df.sort_values("Balanced Acc", ascending=False).iloc[0]
+        with logreg_md_path.open("w", encoding="utf-8") as f:
+            f.write("# Class Imbalance Experiments - Logistic Regression\n\n")
+            f.write("## 1. Imbalance Analysis\n\n```text\n")
+            f.write(report_text)
+            f.write("\n```\n\n## 2. Benchmark Results\n\n")
+            f.write(_dataframe_to_markdown(logreg_df))
+            f.write("\n\n## 3. Findings & Recommendation\n\n")
+            f.write(f"- **Best Strategy**: `{best_logreg['Strategy']}`\n")
+            f.write(f"- **Top Balanced Accuracy**: `{best_logreg['Balanced Acc']}`\n")
+            f.write(f"- **Retained Customer Detection**: `{best_logreg['Retained Recall (TN%)']}` of minority class captured.\n")
 
-    # 2. LightGBM Imbalance Experiments
-    print("\n" + "=" * 60)
-    print("RUNNING LIGHTGBM IMBALANCE EXPERIMENTS")
-    print("=" * 60)
-    lgbm_df, _ = run_lightgbm_imbalance_experiments(
-        X_train, y_train, X_val, y_val, X_test, y_test, tune_metric="balanced_accuracy"
-    )
-    print("\nLIGHTGBM IMBALANCE EXPERIMENTS TABLE:")
-    print(lgbm_df.to_string(index=False))
+        # 2. LightGBM Imbalance Experiments
+        print("\n" + "=" * 60)
+        print("RUNNING LIGHTGBM IMBALANCE EXPERIMENTS")
+        print("=" * 60)
+        lgbm_df, _ = run_lightgbm_imbalance_experiments(
+            X_train,
+            y_train,
+            X_val,
+            y_val,
+            X_test,
+            y_test,
+            tune_metric="balanced_accuracy",
+        )
+        print("\nLIGHTGBM IMBALANCE EXPERIMENTS TABLE:")
+        print(lgbm_df.to_string(index=False))
 
-    lgbm_csv_path = reports_dir / "imbalance_experiments_lightgbm.csv"
-    lgbm_df.to_csv(lgbm_csv_path, index=False)
+        lgbm_csv_path = reports_dir / "imbalance_experiments_lightgbm.csv"
+        lgbm_df.to_csv(lgbm_csv_path, index=False)
 
-    lgbm_md_path = reports_dir / "imbalance_experiments_lightgbm_report.md"
-    best_lgbm = lgbm_df.sort_values("Balanced Acc", ascending=False).iloc[0]
-    with lgbm_md_path.open("w", encoding="utf-8") as f:
-        f.write("# Class Imbalance Experiments - LightGBM\n\n")
-        f.write("## 1. Imbalance Analysis\n\n```text\n")
-        f.write(report_text)
-        f.write("\n```\n\n## 2. Benchmark Results\n\n")
-        f.write(_dataframe_to_markdown(lgbm_df))
-        f.write("\n\n## 3. Findings & Recommendation\n\n")
-        f.write(f"- **Best Strategy**: `{best_lgbm['Strategy']}`\n")
-        f.write(f"- **Top Balanced Accuracy**: `{best_lgbm['Balanced Acc']}`\n")
-        f.write(f"- **Retained Customer Detection**: `{best_lgbm['Retained Recall (TN%)']}` of minority class captured.\n")
+        lgbm_md_path = reports_dir / "imbalance_experiments_lightgbm_report.md"
+        best_lgbm = lgbm_df.sort_values("Balanced Acc", ascending=False).iloc[0]
+        with lgbm_md_path.open("w", encoding="utf-8") as f:
+            f.write("# Class Imbalance Experiments - LightGBM\n\n")
+            f.write("## 1. Imbalance Analysis\n\n```text\n")
+            f.write(report_text)
+            f.write("\n```\n\n## 2. Benchmark Results\n\n")
+            f.write(_dataframe_to_markdown(lgbm_df))
+            f.write("\n\n## 3. Findings & Recommendation\n\n")
+            f.write(f"- **Best Strategy**: `{best_lgbm['Strategy']}`\n")
+            f.write(f"- **Top Balanced Accuracy**: `{best_lgbm['Balanced Acc']}`\n")
+            f.write(f"- **Retained Customer Detection**: `{best_lgbm['Retained Recall (TN%)']}` of minority class captured.\n")
 
-    print(f"\nResults successfully exported to:")
-    print(f"  - Logistic Regression CSV: {logreg_csv_path}")
-    print(f"  - Logistic Regression MD:  {logreg_md_path}")
-    print(f"  - LightGBM CSV:            {lgbm_csv_path}")
-    print(f"  - LightGBM MD:             {lgbm_md_path}")
+        print(f"\nResults successfully exported to:")
+        print(f"  - Logistic Regression CSV: {logreg_csv_path}")
+        print(f"  - Logistic Regression MD:  {logreg_md_path}")
+        print(f"  - LightGBM CSV:            {lgbm_csv_path}")
+        print(f"  - LightGBM MD:             {lgbm_md_path}")
+    except (FileNotFoundError, ValueError, KeyError, TypeError) as exc:
+        logger.error("Imbalance experiment setup failed: %s", exc)
+        raise SystemExit(1) from exc
+    except Exception as exc:  # pragma: no cover - final safety net
+        logger.exception("Unexpected error in imbalance experiments: %s", exc)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     main()
