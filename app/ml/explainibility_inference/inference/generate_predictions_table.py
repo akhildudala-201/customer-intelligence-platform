@@ -17,7 +17,6 @@ OUTPUT_TABLE_NAME = "churn_predictions"
 
 
 def _split_scoreable_rows(features_df: pd.DataFrame) -> pd.DataFrame:
-   
     null_mask = features_df[REQUIRED_FEATURES].isnull().any(axis=1)
     skipped = features_df[null_mask]
     scoreable = features_df[~null_mask].reset_index(drop=True)
@@ -41,7 +40,6 @@ def _split_scoreable_rows(features_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _records_to_dataframe(records: list[dict]) -> pd.DataFrame:
-
     rows = []
     for record in records:
         rows.append(
@@ -58,14 +56,12 @@ def _records_to_dataframe(records: list[dict]) -> pd.DataFrame:
 
 
 def generate_predictions_table() -> pd.DataFrame:
-
     features_df = get_all_customer_features()
     scoreable_df = _split_scoreable_rows(features_df)
 
     predictor = ChurnPredictor()
     records = predictor.predict(scoreable_df)
     output_df = _records_to_dataframe(records)
-
 
     from app.Database.database import engine
 
@@ -80,4 +76,4 @@ def generate_predictions_table() -> pd.DataFrame:
 
 if __name__ == "__main__":
     result = generate_predictions_table()
-    print(f"Wrote {len(result)} rows to `{OUTPUT_TABLE_NAME}`.")
+    print(f"Wrote {len(result)} rows to {OUTPUT_TABLE_NAME}.")
